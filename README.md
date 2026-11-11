@@ -6,8 +6,11 @@ governed semantic layer, checked with a real parser **before** it runs, and
 self-corrected from real database errors when it fails. Never guessed, never hidden.
 
 > **Sample data only.** The demo dataset is a deterministic, synthetic
-> e-commerce dataset (200 customers, 20 products, 612 orders, 120 subscriptions
-> across 2025). Every screen labels it "Sample data". No real personal data.
+> e-commerce dataset (2,000 customers, 100 products, 5,460 orders — 5,142
+> completed — 600 subscriptions across 2024–2025, 24 months). Every screen
+> labels it "Sample data". No real personal data. The seed is versioned
+> (`seed_meta`): if the stored seed version differs from the code's, the
+> database is reseeded on startup instead of silently serving stale data.
 
 ## Architecture
 
@@ -48,16 +51,16 @@ the real ask path. Nothing here is a PRD target.
 | Safety suite (destructive / stacked / comment-hidden / PII / out-of-schema) | **11/11 blocked (100%)** |
 | Ambiguous / unmodelled / unsafe handling | 14/14 correct (clarifying / refused / blocked) |
 | LLM mode in this run | `deterministic-fallback` (no API key set) — cost $0.00, 0 tokens per query |
-| Backend tests | **37 passing** (`python -m pytest backend/tests -q`) |
+| Backend tests | **56 passing** (`python -m pytest backend/tests -q`) |
 
 ### Ablation (same 50 cases, one layer added at a time)
 
 | Config | Execution accuracy | Valid-SQL rate | Avg latency |
 | --- | --- | --- | --- |
 | (a) Direct-LLM baseline | **not run — no LLM key** (no number is claimed without running it) | — | — |
-| (b) + Semantic layer only | 100% (50/50) | 100% | 9.9 ms |
-| (c) + Validator & correction | 100% (50/50) | 100% | 97.7 ms |
-| (d) Full system + cache/examples | 100% (50/50) | 100% | 99.7 ms cold; cache hit rate 72% on the warm second pass (36/36 answered cases hit) |
+| (b) + Semantic layer only | 100% (50/50) | 100% | 41.8 ms |
+| (c) + Validator & correction | 100% (50/50) | 100% | 136.5 ms |
+| (d) Full system + cache/examples | 100% (50/50) | 100% | 145.7 ms cold; 116.9 ms warm, cache hit rate 72% on the warm second pass (36/36 answered cases hit) |
 
 Why (b) already scores 100%: the deterministic planner drafts from the same
 semantic layer the checks are written against, so on the modelled golden set
@@ -85,17 +88,55 @@ not claimed anywhere in this README.
 
 | Question | Expected answer |
 | --- | --- |
-| What is total revenue? | $54,428.14 |
-| What is total revenue by month? | 12 rows, Jan $2,802.79 → Dec $6,941.37 (line chart) |
-| What is total revenue by region? | North $18,602.88 (top), then South, East, West |
-| What are the top products by revenue? | Pulse Smartwatch $7,453.40 (top of 5) |
-| How many orders were there? | Completed-order count from the seed |
-| What is the average order value? | AVG of completed order amounts |
-| How many active customers do we have? | COUNT DISTINCT customers with active subscriptions |
+| What is total revenue? | $517,171.84 |
+| What is total revenue by month? | 24 rows, Jan 2024 $16,694.74 → Dec 2025 $24,701.04 (line chart) |
+| What is total revenue by region? | North $184,999.70 (top), then South $130,982.28, East $103,748.77, West $97,441.09 |
+| What are the top products by revenue? | Pulse Smartwatch Max $17,928.85 (top of 5) |
+| How many orders were there? | 5,142 completed orders (of 5,460 total) |
+| What is the average order value? | $100.58 (AVG of completed order amounts) |
+| How many active customers do we have? | 353 (COUNT DISTINCT customers with active subscriptions) |
 | What is the monthly churn rate? | Monthly churn % by month (line chart) |
 | What is the churn rate? | Clarifying question (needs a period) — not a guess |
 | What is our profit margin? | Honest refusal — `profit` is not modelled; nearest metric is `total_revenue` |
 | Delete all orders from the database. | Blocked by the validator (read-only rule) — never executed |
+
+## Upload your own CSV (Data tab)
+
+Upload a CSV from the **Data** tab (or `POST /api/data/upload`, multipart,
+no token needed for the demo workspace) and ask questions over it in plain
+English — the generated SQL goes through the same sqlglot validator,
+read-only executor and correction loop as the demo metrics.
+
+- **Limits:** one `.csv` file, max 5 MB, 100,000 rows, 50 columns. UTF-8
+  (latin-1 fallback), header row required, column names sanitised to
+  `[a-z0-9_]` (duplicates after sanitising are rejected), types inferred
+  from a sample (integer / float / date / text), files with no data rows
+  rejected.
+- **Storage:** real DuckDB table `upl_<id>_<name>` in the demo database;
+  metadata (filename, columns + types, row count, workspace) in the audit
+  SQLite DB. `GET /api/data/datasets` lists uploads; `DELETE
+  /api/data/datasets/{id}` drops the table + metadata. Uploaded tables are
+  allow-listed in the validator **for their workspace only** and shown in
+  `GET /api/semantic/models`.
+- **Questions that work** (name the dataset, e.g. "sample sales"): "How many
+  rows are in sample sales?" (COUNT), "What is the total amount in sample
+  sales?" (SUM), "What is the average amount in sample sales?" (AVG), "Top 5
+  amount in sample sales" (ORDER BY + LIMIT), "Total amount by region in
+  sample sales" (GROUP BY), "Show rows in sample sales" (SELECT + LIMIT).
+  Two numeric columns matching one question → a clarifying question with
+  options; a question the columns can't answer → an honest refusal naming
+  the available columns.
+- **Try it now:** `frontend/public/sample-sales.csv` (200 rows of sales
+  data, date/region/product/quantity/amount) — download it from the Data tab.
+  Measured live: total amount $80,082.71; by region West $23,488.36, East
+  $20,066.79, South $18,730.77, North $17,796.79; 200 rows.
+- **DuckDB only:** uploads need the DuckDB demo database. With `DATABASE_URL`
+  set (Postgres target) the endpoint refuses with a plain-English error.
+- **Not supported (honest):** follow-up questions over an upload ("by region"
+  on its own) — the dataset must be named again in the question; date
+  grouping only by month; joins between an uploaded table and the demo
+  tables; filtering an upload by a value ("amount over 100 in sample
+  sales" is not parsed — it falls back to the refusal path).
 
 ## Run locally (one command)
 
@@ -131,8 +172,8 @@ executor can never write even if validation had a bug). Unset it and DuckDB
 remains the default.
 
 ```bash
-# Seed the same deterministic demo dataset into Postgres (200 customers,
-# 20 products, 612 orders, 120 subscriptions — identical rows to DuckDB):
+# Seed the same deterministic demo dataset into Postgres (2,000 customers,
+# 100 products, 5,460 orders, 600 subscriptions — identical rows to DuckDB):
 DATABASE_URL=postgresql://qp:qp-dev-only@localhost:5432/querypilot \
   python -m app.seed --postgres
 # or, without the flag, seed DuckDB:
@@ -270,6 +311,7 @@ python backend/evals/run_eval.py
 | `GET /api/health` (also `/` and `/health`) | Status + honest `llm_mode`, `dialect`, `cache_backend`, `scheduler`, `auth` |
 | `POST /api/auth/register` · `POST /api/auth/login` · `GET /api/auth/me` | JWT auth (register, login, current user) |
 | `POST /api/ask` | Ask a question (no token needed for the demo workspace) |
+| `POST /api/data/upload` · `GET /api/data/datasets` · `DELETE /api/data/datasets/{id}` | Upload a CSV, list uploads, delete one (DuckDB only; no token needed for demo workspace) |
 | `POST /api/ask/{run_id}/follow-up` | Follow-up reusing prior run context |
 | `GET /api/runs/{id}` · `GET /api/history` | Run detail / past runs |
 | `GET /api/semantic/metrics` · `GET /api/semantic/models` | Semantic explorer |
@@ -303,6 +345,13 @@ python backend/evals/run_eval.py
 - Auth is JWT with a dev-default secret (`dev-only-change-me`): set
   `QP_JWT_SECRET` to a long random value in production. The demo logins are
   public demo credentials, not real accounts.
+- **CSV uploads are DuckDB-only** (see "Upload your own CSV" above) and
+  live in the same DuckDB file as the demo data. DuckDB forbids a read-write
+  connection while a read-only one to the same file is alive in the process,
+  so the executor disposes its engine after every query and the upload path
+  retries a held connection briefly; a genuinely concurrent ask + upload can
+  still make one upload retry. Upload question patterns are limited to
+  count / sum / average / top-N / group-by / show-rows (see above).
 - Workspace scoping is enforced in the planner/validator for the demo
   workspace; multi-workspace data isolation beyond that is not a goal of
   this build.

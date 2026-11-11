@@ -63,6 +63,15 @@ def execute_sql(sql: str, db_path: str | None = None, timeout: int | None = None
             cols, rows = fut.result(timeout=timeout)
         except FuturesTimeout:
             raise TimeoutError(f"Query timed out after {timeout}s (statement timeout). Narrow the question and retry.")
+        finally:
+            # DuckDB: dispose the engine so its pooled read-only connection
+            # is closed NOW, not when the cyclic GC gets round to it. A
+            # lingering read-only connection blocks any later read-write
+            # connection to the same file in this process (DuckDB forbids
+            # mixed configurations) — and CSV uploads write to this file.
+            # Postgres engines stay pooled (module-level cache).
+            if settings.dialect != "postgres":
+                engine.dispose()
     return cols, rows, int((time.time() - start) * 1000)
 
 

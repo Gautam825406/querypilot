@@ -53,6 +53,9 @@ def _conn():
         breached INTEGER, notified INTEGER, delivery TEXT, created_at REAL)""")
     con.execute("""CREATE TABLE IF NOT EXISTS eval_runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, config TEXT, result_json TEXT, created_at REAL)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS datasets (
+        id TEXT PRIMARY KEY, filename TEXT, table_name TEXT, columns_json TEXT,
+        row_count INTEGER, workspace TEXT, created_at REAL)""")
     _migrate(con)
     con.commit()
     return con
@@ -246,3 +249,50 @@ def save_eval_run(config: str, result: dict) -> int:
     con.commit()
     con.close()
     return cur.lastrowid
+
+
+# ---- Uploaded CSV datasets ----
+
+def save_dataset(ds: dict) -> None:
+    con = _conn()
+    con.execute("INSERT OR REPLACE INTO datasets "
+                "(id, filename, table_name, columns_json, row_count, workspace, created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (ds["id"], ds["filename"], ds["table_name"],
+                 json.dumps(ds["columns"]), ds["row_count"],
+                 ds.get("workspace", "demo"), time.time()))
+    con.commit()
+    con.close()
+
+
+def list_datasets(workspace: str = "demo") -> list[dict]:
+    con = _conn()
+    con.row_factory = sqlite3.Row
+    rows = con.execute("SELECT * FROM datasets WHERE workspace=? ORDER BY created_at DESC",
+                       (workspace,)).fetchall()
+    con.close()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["columns"] = json.loads(d["columns_json"] or "[]")
+        out.append(d)
+    return out
+
+
+def get_dataset(dataset_id: str):
+    con = _conn()
+    con.row_factory = sqlite3.Row
+    row = con.execute("SELECT * FROM datasets WHERE id=?", (dataset_id,)).fetchone()
+    con.close()
+    if not row:
+        return None
+    d = dict(row)
+    d["columns"] = json.loads(d["columns_json"] or "[]")
+    return d
+
+
+def delete_dataset_metadata(dataset_id: str) -> None:
+    con = _conn()
+    con.execute("DELETE FROM datasets WHERE id=?", (dataset_id,))
+    con.commit()
+    con.close()

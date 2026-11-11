@@ -71,7 +71,7 @@ class _FakeResult:
         return ["total_revenue"]
 
     def fetchmany(self, n):
-        return [(54428.14,)]
+        return [(517171.84,)]
 
 
 class _FakeConn:
@@ -117,7 +117,7 @@ def test_postgres_executor_uses_read_only_transaction(monkeypatch):
     try:
         cols, rows, _ms = executor.execute_sql(REVENUE_SQL)
         assert cols == ["total_revenue"]
-        assert rows == [[54428.14]]
+        assert rows == [[517171.84]]
         assert fake.conn.calls[0] == "SET TRANSACTION READ ONLY"
         assert fake.conn.calls[1].startswith("SET LOCAL statement_timeout")
         assert "SUM(amount)" in fake.conn.calls[2]
@@ -242,7 +242,7 @@ def test_ask_works_without_token(client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["status"] == "executed"
-    assert body["rows"][0][0] == 54428.14
+    assert body["rows"][0][0] == 517171.84
 
 
 def test_health_reports_backends(client):
@@ -277,7 +277,7 @@ def test_insight_run_now_breach_notifies(client, monkeypatch):
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["status"] == "executed"
-        assert body["value"] == 54428.14
+        assert body["value"] == 517171.84
         assert body["breached"] is True
         assert len(calls) == 1  # notified exactly once, on the breach
     finally:

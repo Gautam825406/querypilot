@@ -37,7 +37,7 @@ function resolveClarifying(run: any, option: string): string {
   if (/^Q[1-4]/.test(option)) return `What is total revenue in ${option}?`
   if (option.startsWith('Last month')) return 'What is the monthly churn rate in December?'
   if (option.startsWith('Last 3 months')) return 'What is the monthly churn rate in the last 3 months?'
-  if (option.startsWith('All 12 months')) return 'Show churn by month.'
+  if (option.startsWith('All months')) return 'Show churn by month.'
   if (option === 'Total (all time)') return `What is ${(run.metric || 'total_revenue').replace(/_/g, ' ')}?`
   if (option === 'By month') return `What is ${(run.metric || 'total_revenue').replace(/_/g, ' ')} by month?`
   if (option === 'By region') return `What is ${(run.metric || 'total_revenue').replace(/_/g, ' ')} by region?`
@@ -68,8 +68,9 @@ const ICONS: Record<string, React.ReactNode> = {
   history: <Icon><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 13.5" /></Icon>,
   insights: <Icon d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />,
   eval: <Icon><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 11.5 11 13.5 15 9.5" /></Icon>,
+  data: <Icon><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></Icon>,
 }
-const TABS = ['ask', 'semantic', 'history', 'insights', 'eval'] as const
+const TABS = ['ask', 'data', 'semantic', 'history', 'insights', 'eval'] as const
 
 export default function App() {
   const [tab, setTab] = useState('ask')
@@ -87,6 +88,12 @@ export default function App() {
   const [insightRuns, setInsightRuns] = useState<Record<string, any>>({})
   const [evalResult, setEvalResult] = useState<any>(null)
   const [followUp, setFollowUp] = useState('')
+  // CSV uploads (Data tab): file picker + list of uploaded datasets.
+  const [datasets, setDatasets] = useState<any[]>([])
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const [uploadSuccess, setUploadSuccess] = useState<any>(null)
   // Auth: the app works fully logged out (anonymous = demo workspace).
   // Signing in unlocks saving insights, running evals and admin limits.
   const [user, setUser] = useState<any>(() => getStoredUser())
@@ -102,11 +109,35 @@ export default function App() {
     api.metrics().then((d) => setMetrics(d.metrics || [])).catch(() => {})
     api.models().then(setModels).catch(() => {})
     refreshHistory()
+    refreshDatasets()
     api.insights().then((d) => setInsights(d.insights || [])).catch(() => {})
   }, [])
 
   function refreshHistory() {
     api.history().then((d) => setHistory(d.runs || [])).catch(() => {})
+  }
+
+  function refreshDatasets() {
+    api.datasets().then((d) => setDatasets(d.datasets || [])).catch(() => {})
+  }
+
+  async function doUpload() {
+    if (!uploadFile) return
+    setUploading(true); setUploadError(''); setUploadSuccess(null)
+    try {
+      const ds = await api.uploadCsv(uploadFile)
+      setUploadSuccess(ds); setUploadFile(null); refreshDatasets()
+    } catch (e: any) {
+      setUploadError(e.message || 'Upload failed. Check the file is a CSV under 5 MB and try again.')
+    } finally { setUploading(false) }
+  }
+
+  async function deleteDataset(id: string) {
+    try {
+      await api.deleteDataset(id)
+      setDatasets((prev) => prev.filter((d) => d.id !== id))
+      if (uploadSuccess?.id === id) setUploadSuccess(null)
+    } catch (e: any) { setUploadError(e.message || 'Could not delete the dataset.') }
   }
 
   function goTab(t: typeof TABS[number]) {
@@ -284,7 +315,7 @@ export default function App() {
             <div className="trust-stats" aria-label="Measured results">
               <div className="trust-stat"><b>100%</b><span>Execution accuracy · 50 golden cases</span></div>
               <div className="trust-stat"><b>11/11</b><span>Safety checks blocked</span></div>
-              <div className="trust-stat"><b>37</b><span>Backend tests passing</span></div>
+              <div className="trust-stat"><b>56</b><span>Backend tests passing</span></div>
             </div>
           </div>
 
@@ -365,6 +396,63 @@ export default function App() {
                 </div>
               )}
             </div>
+          </div>
+        </section>
+      )}
+
+      {tab === 'data' && (
+        <section className="page">
+          <div className="page-head">
+            <h2>Your data</h2>
+            <p className="section-sub">Upload a CSV and ask questions over it in plain English — the same sqlglot validator, read-only executor and correction loop as the demo data. Limits: one .csv file, max 5 MB, 100,000 rows, 50 columns.</p>
+          </div>
+          <div className="card upload-card">
+            <h3 style={{ marginTop: 0 }}>Upload a CSV</h3>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Columns are cleaned up automatically (spaces become underscores) and types are detected — numbers, dates and text.
+              Try it first with the sample file: <a href="/sample-sales.csv" download>Download sample CSV</a> (200 rows of sales data).
+            </p>
+            <div className="upload-row">
+              <input type="file" accept=".csv" onChange={(e) => { setUploadFile(e.target.files?.[0] || null); setUploadError(''); setUploadSuccess(null) }} />
+              <button className="btn btn-primary" disabled={!uploadFile || uploading} onClick={doUpload}>
+                {uploading ? 'Uploading…' : 'Upload'}
+              </button>
+            </div>
+            {uploadFile && <p className="muted" style={{ marginBottom: 0 }}>Selected: {uploadFile.name} ({Math.round(uploadFile.size / 1024)} KB)</p>}
+            {uploadError && <p style={{ color: '#fb7185', margin: '8px 0 0' }}>{uploadError}</p>}
+            {uploadSuccess && (
+              <div className="upload-success">
+                <p style={{ margin: '8px 0' }}>✓ <b>{uploadSuccess.filename}</b> uploaded — {uploadSuccess.row_count} rows, {uploadSuccess.columns.length} columns.</p>
+                <p className="muted" style={{ margin: '0 0 6px' }}>Try asking:</p>
+                <div className="chips">
+                  {(uploadSuccess.example_questions || []).map((q: string) => (
+                    <button className="chip" key={q} onClick={() => { setQuestion(q); setTab('ask'); ask(q) }}>{q}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <h3>Uploaded datasets</h3>
+          {datasets.length === 0 && (
+            <div className="card empty-state"><div className="empty-icon">📁</div>No datasets yet. Upload a CSV above.</div>
+          )}
+          <div className="dataset-grid">
+            {datasets.map((d: any) => (
+              <div className="card dataset-card" key={d.id}>
+                <div className="dataset-head"><b>{d.filename}</b><span className="tag">{d.row_count} rows</span></div>
+                <div className="tag-row">
+                  {(d.columns || []).map((c: any) => <span className="tag" key={c.name}>{c.name} · {c.type}</span>)}
+                </div>
+                <div className="dataset-actions">
+                  <button className="btn btn-sm btn-primary" onClick={() => {
+                    const name = d.table_name.split('_').slice(2).join(' ')
+                    const q = `How many rows are in ${name}?`
+                    setQuestion(q); setTab('ask'); ask(q)
+                  }}>Ask about it</button>
+                  <button className="btn btn-sm btn-danger" onClick={() => deleteDataset(d.id)}>Delete</button>
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       )}

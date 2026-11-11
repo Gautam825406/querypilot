@@ -82,7 +82,7 @@ def test_ask_total_revenue_end_to_end():
 def test_ask_monthly_trend():
     run = run_ask("What is total revenue by month?")
     assert run["status"] == "executed"
-    assert len(run["rows"]) == 12
+    assert len(run["rows"]) == 24
     assert run["chart_spec"]["type"] == "line"
 
 

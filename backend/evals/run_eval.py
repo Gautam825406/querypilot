@@ -70,7 +70,7 @@ def _compare(answer_cols, answer_rows, ref_cols, ref_rows):
     """Compare on the reference columns present in the answer (subset match).
 
     Both sides are normalised first (Decimal -> rounded float, dates ->
-    ISO strings) — a raw Decimal('54428.14') never equals the float 54428.14
+    ISO strings) — a raw Decimal('517171.84') never equals the float 517171.84
     exactly, so comparing unnormalised rows silently fails every case.
     """
     if not ref_cols:

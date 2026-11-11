@@ -59,6 +59,25 @@ def explain(question: str, metric: str, definition: str, columns, rows, dimensio
     return " ".join(parts)
 
 
+def explain_upload(question: str, dataset_name: str, columns, rows) -> str:
+    """Plain-English summary for a question over an uploaded CSV dataset."""
+    if not rows:
+        return f"No rows matched in '{dataset_name}'."
+    if len(rows) == 1 and len(columns) <= 2:
+        val = rows[0][-1]
+        label = columns[-1].replace("_", " ")
+        return f"{label.capitalize()} is {_fmt(val)} in '{dataset_name}'."
+    if len(rows) > 1:
+        vals = [float(r[-1]) for r in rows if _num(r[-1])]
+        if vals and len(columns) >= 2:
+            top = rows[max(range(len(rows)), key=lambda i: vals[i])]
+            bottom = rows[min(range(len(rows)), key=lambda i: vals[i])]
+            return (f"Across {len(rows)} groups in '{dataset_name}', the total is {_fmt(sum(vals))}. "
+                    f"Highest is {top[0]} at {_fmt(top[-1])}; lowest is {bottom[0]} at {_fmt(bottom[-1])}.")
+        return f"The query returned {len(rows)} rows from '{dataset_name}'."
+    return f"The query returned {len(rows)} row from '{dataset_name}'."
+
+
 def llm_explain(question: str, template: str) -> str:
     """Optional LLM polish for the explanation only. Returns template unchanged on any failure / no key."""
     key = os.environ.get("GROQ_API_KEY", "")

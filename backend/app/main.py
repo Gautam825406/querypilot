@@ -11,20 +11,21 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .auth import create_token, decode_token, hash_password, verify_password
-from .cache import cache_backend_name
+from .cache import cache_backend_name, cache_invalidate
 from .config import settings
 from .insights import execute_insight, list_runs as list_insight_runs
 from .planner import _ensure_demo_db, parse_question, run_ask
 from .semantic import SCHEMA, layer
-from .store import (create_user, delete_insight, ensure_demo_user, get_insight,
-                    get_limits, get_run, get_user_by_email, list_insights,
-                    list_runs, save_eval_run, save_feedback, save_insight,
-                    set_limits, update_insight)
+from .store import (create_user, delete_insight, ensure_demo_user, get_dataset,
+                    get_insight, get_limits, get_run, get_user_by_email,
+                    list_datasets, list_insights, list_runs, save_eval_run,
+                    save_feedback, save_insight, set_limits, update_insight)
+from .uploads import MAX_FILE_BYTES, UploadError, delete_dataset, upload_dataset
 from .validator import ValidationError, validate_sql
 
 app = FastAPI(title="QueryPilot", version="1.0.0",
@@ -210,10 +211,57 @@ def metrics():
 
 
 @app.get("/api/semantic/models")
-def models():
+def models(workspace: str = "demo", user: dict | None = Depends(get_current_user)):
+    ws = _workspace_for(workspace, user)
+    uploads = list_datasets(ws)
+    schema = {**SCHEMA,
+              **{ds["table_name"]: {c["name"]: c["type"].upper() for c in ds["columns"]}
+                 for ds in uploads}}
     return {"layer_version": layer.version, "models": list(layer.models.values()),
             "dimensions": list(layer.dimensions.values()), "joins": layer.joins,
-            "schema": SCHEMA, "pii_columns": ["customers.email", "customers.phone"]}
+            "schema": schema, "uploaded_datasets": uploads,
+            "pii_columns": ["customers.email", "customers.phone"]}
+
+
+# ---- CSV uploads (DuckDB demo database only) ----
+
+@app.post("/api/data/upload")
+async def upload_csv(file: UploadFile = File(...),
+                     user: dict | None = Depends(get_current_user)):
+    """Upload one .csv file (max 5 MB, 100k rows, 50 columns) and store it as
+    a real DuckDB table that /api/ask can query. Auth optional like /api/ask:
+    anonymous callers upload into the demo workspace."""
+    workspace = _workspace_for("demo", user)
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Only .csv files can be uploaded.")
+    data = await file.read()
+    if len(data) > MAX_FILE_BYTES:
+        raise HTTPException(400, f"File is {len(data) / 1024 / 1024:.1f} MB — the limit is 5 MB. "
+                                 "Split the file or upload a smaller sample.")
+    try:
+        ds = upload_dataset(data, file.filename, workspace)
+    except UploadError as e:
+        raise HTTPException(400, str(e))
+    # Uploaded tables change what questions can answer: drop cached answers.
+    cache_invalidate()
+    return ds
+
+
+@app.get("/api/data/datasets")
+def list_data(workspace: str = "demo", user: dict | None = Depends(get_current_user)):
+    ws = _workspace_for(workspace, user)
+    return {"datasets": list_datasets(ws)}
+
+
+@app.delete("/api/data/datasets/{dataset_id}")
+def delete_data(dataset_id: str, user: dict | None = Depends(get_current_user)):
+    workspace = _workspace_for("demo", user)
+    ds = get_dataset(dataset_id)
+    if not ds or ds.get("workspace") != workspace:
+        raise HTTPException(404, "Dataset not found")
+    delete_dataset(dataset_id)
+    cache_invalidate()
+    return {"deleted": dataset_id}
 
 
 # ---- Scheduled insights ----

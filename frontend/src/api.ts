@@ -35,6 +35,23 @@ export const api = {
   health: () => req('/api/health'),
   ask: (question: string, workspace = 'demo') =>
     req('/api/ask', { method: 'POST', body: JSON.stringify({ question, workspace }) }),
+  // ---- CSV uploads (multipart — needs FormData, not JSON) ----
+  uploadCsv: async (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    const headers: Record<string, string> = {}
+    const token = getToken()
+    if (token) headers['Authorization'] = `Bearer ${token}`
+    const r = await fetch(`${API}/api/data/upload`, { method: 'POST', headers, body: form })
+    if (!r.ok) {
+      let msg = `Upload failed (${r.status}).`
+      try { const d = await r.json(); if (d?.detail) msg = d.detail } catch { /* keep default */ }
+      throw new Error(msg)
+    }
+    return r.json()
+  },
+  datasets: () => req('/api/data/datasets'),
+  deleteDataset: (id: string) => req(`/api/data/datasets/${id}`, { method: 'DELETE' }),
   followUp: (runId: string, question: string) =>
     req(`/api/ask/${runId}/follow-up`, { method: 'POST', body: JSON.stringify({ question }) }),
   run: (id: string) => req(`/api/runs/${id}`),

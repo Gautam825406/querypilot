@@ -13,6 +13,22 @@ BLOCKED_KEYWORDS = {"insert", "update", "delete", "drop", "create", "alter", "tr
                     "grant", "revoke", "merge", "call", "exec", "execute", "replace", "attach"}
 
 
+def workspace_schema(workspace: str = "demo") -> dict:
+    """Static semantic-layer schema + this workspace's uploaded CSV tables.
+
+    Uploaded tables are allow-listed per workspace only: a table uploaded
+    into workspace A is simply not in workspace B's schema, so a query for
+    it fails exactly like an out-of-schema table.
+    """
+    schema = dict(SCHEMA)
+    try:
+        from .uploads import list_upload_tables
+        schema.update(list_upload_tables(workspace))
+    except Exception:
+        pass
+    return schema
+
+
 class ValidationError(Exception):
     def __init__(self, rule: str, message: str):
         super().__init__(message)
@@ -24,14 +40,17 @@ def _strip_strings(sql: str) -> str:
     return re.sub(r"'[^']*'", "''", sql)
 
 
-def validate_sql(sql: str, dialect: str | None = None) -> dict:
+def validate_sql(sql: str, dialect: str | None = None, workspace: str = "demo") -> dict:
     """Validate one SQL statement. Returns {ok, sql (with LIMIT), rule} or raises ValidationError.
 
     `dialect` defaults to the configured dialect (settings.dialect): 'duckdb'
     for the demo file, 'postgres' when DATABASE_URL points at Postgres. The
     parser and the emitted SQL both follow that dialect.
+    `workspace` scopes the allow-list: uploaded CSV tables of other
+    workspaces are not in this workspace's schema.
     """
     dialect = dialect or settings.dialect
+    schema = workspace_schema(workspace)
     raw = sql.strip()
     if not raw:
         raise ValidationError("empty", "Empty SQL is not allowed.")
@@ -68,7 +87,7 @@ def validate_sql(sql: str, dialect: str | None = None) -> dict:
             alias_map[tbl.alias_or_name.lower()] = tbl.name.lower()
     for tbl in tree.find_all(exp.Table):
         name = tbl.name.lower()
-        if name and name not in SCHEMA and name not in cte_names:
+        if name and name not in schema and name not in cte_names:
             raise ValidationError("schema", f"Table '{name}' is not in the schema or semantic layer.")
     # Every column must exist and PII must be blocked.
     for col in tree.find_all(exp.Column):
@@ -80,9 +99,9 @@ def validate_sql(sql: str, dialect: str | None = None) -> dict:
             table = alias_map.get(table, table)
             if table in cte_names:
                 continue
-            if table not in SCHEMA:
+            if table not in schema:
                 raise ValidationError("schema", f"Table '{table}' is not in the schema.")
-            if cname not in SCHEMA[table]:
+            if cname not in schema[table]:
                 raise ValidationError("schema", f"Column '{table}.{cname}' does not exist.")
             if (table, cname) in PII_COLUMNS:
                 raise ValidationError("pii", f"Column '{table}.{cname}' is blocked: it contains personal data (PII).")
@@ -94,11 +113,11 @@ def validate_sql(sql: str, dialect: str | None = None) -> dict:
                 continue
             tables = {t.name.lower() for t in tree.find_all(exp.Table)} - cte_names
             if tables:
-                if not any(cname in SCHEMA.get(t, {}) for t in tables):
+                if not any(cname in schema.get(t, {}) for t in tables):
                     raise ValidationError("schema", f"Column '{cname}' does not exist in the tables used.")
                 if any((t, cname) in PII_COLUMNS for t in tables):
                     raise ValidationError("pii", f"Column '{cname}' is blocked: it contains personal data (PII).")
-            elif cname not in {c for cols in SCHEMA.values() for c in cols}:
+            elif cname not in {c for cols in schema.values() for c in cols}:
                 raise ValidationError("schema", f"Column '{cname}' does not exist.")
     # Inject LIMIT.
     limit = settings.row_limit

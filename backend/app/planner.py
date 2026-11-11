@@ -20,7 +20,7 @@ from langgraph.graph import END, StateGraph
 from .cache import cache_get, cache_key, cache_put
 from .charts import select_chart
 from .config import settings
-from .explainer import explain, llm_explain
+from .explainer import explain, explain_upload, llm_explain
 from .executor import execute_sql
 from .seed import seed
 from .semantic import SCHEMA, layer
@@ -38,6 +38,191 @@ UNMODELLED = ["profit", "margin", "refund", "inventory", "stock", "discount", "t
 NEAREST = {"profit": "total_revenue", "margin": "total_revenue", "refund": "total_orders",
            "retention": "monthly_churn_rate", "lifetime value": "total_revenue",
            "ltv": "total_revenue", "conversion rate": "total_orders"}
+
+# ---- Uploaded CSV datasets (generic question path) ----
+UPLOAD_WORDS = {"upload", "uploaded", "csv", "file", "dataset", "data"}
+
+
+def _tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _dataset_display(ds: dict) -> str:
+    """'upl_ab12cd34_sample_sales' -> 'sample sales' (for questions/answers)."""
+    return ds["table_name"].split("_", 2)[-1].replace("_", " ")
+
+
+def match_dataset(question: str, workspace: str):
+    """Best matching uploaded dataset for a question, or None.
+
+    A dataset matches when the question names it (dataset/filename tokens,
+    e.g. 'sample sales' for sample_sales.csv — score >= 3), or when the
+    workspace has exactly one dataset and the question uses upload words
+    ('my uploaded file', 'the csv', ...). A single stray token (e.g. 'sales'
+    alone) never hijacks a normal demo-metric question.
+    """
+    from .store import list_datasets
+    datasets = list_datasets(workspace)
+    if not datasets:
+        return None
+    qtok = set(_tokens(question))
+    best, best_score = None, 0
+    for ds in datasets:
+        name_tokens = set(ds["table_name"].split("_", 2)[-1].split("_"))
+        stem_tokens = set(_tokens(Path(ds["filename"]).stem))
+        score = sum(2 for t in (name_tokens | stem_tokens) if t in qtok)
+        if score > best_score:
+            best, best_score = ds, score
+    if best and best_score >= 3:
+        return best
+    if len(datasets) == 1 and qtok & UPLOAD_WORDS:
+        return datasets[0]
+    return None
+
+
+def _match_columns(question: str, columns: list[dict], want_types: set[str] | None = None):
+    """Score columns against a question: [(score, col)] sorted best-first.
+
+    Exact sanitised-name substring scores 3; each shared token scores 1.
+    """
+    qtok = set(_tokens(question))
+    low = question.lower()
+    scored = []
+    for col in columns:
+        if want_types and col["type"] not in want_types:
+            continue
+        name = col["name"]
+        name_toks = set(name.split("_")) | set(_tokens(col["original"]))
+        score = (3 if name in low else 0) + len(name_toks & qtok)
+        if score:
+            scored.append((score, col))
+    scored.sort(key=lambda s: -s[0])
+    return scored
+
+
+def parse_upload_question(q: str, workspace: str):
+    """Generic question path over an uploaded CSV dataset.
+
+    Returns a parse_question-shaped dict (with force_sql / clarifying /
+    refused as needed), or None when no uploaded dataset clearly matches
+    the question — in which case the normal semantic-layer path runs.
+    The generated SQL always goes through the same validator + read-only
+    executor + correction loop as everything else.
+    """
+    ds = match_dataset(q, workspace)
+    if not ds:
+        return None
+    table = ds["table_name"]
+    display = _dataset_display(ds)
+    cols = ds["columns"]
+    numeric = [c for c in cols if c["type"] in ("integer", "float")]
+    categorical = [c for c in cols if c["type"] == "text"]
+    dates = [c for c in cols if c["type"] == "date"]
+    low = (q or "").lower()
+    col_list = ", ".join(f"{c['name']} ({c['type']})" for c in cols)
+    base = {"question": q, "intent": "metric_lookup", "metrics": ["uploaded_data"],
+            "dimension": None, "period": None, "filters": {}, "status": "ok",
+            "clarifying_question": None, "clarifying_options": [], "refusal": None,
+            "upload": {"dataset_id": ds["id"], "dataset_name": display, "table": table,
+                       "columns": cols, "filename": ds["filename"],
+                       "row_count": ds["row_count"]}}
+
+    def refuse(msg: str):
+        out = dict(base)
+        out.update(status="refused",
+                   refusal=f"{msg} Available columns in '{display}': {col_list}.")
+        return out
+
+    def clarify(question_text: str, options: list[str]):
+        out = dict(base)
+        out.update(status="clarifying", clarifying_question=question_text,
+                   clarifying_options=options)
+        return out
+
+    def pick_numeric(exclude: set[str] | None = None):
+        """The numeric column a sum/avg question means, or None if ambiguous."""
+        exclude = exclude or set()
+        cands = [(s, c) for s, c in _match_columns(q, cols, {"integer", "float"})
+                 if c["name"] not in exclude]
+        if cands and cands[0][0] >= 3 and (len(cands) == 1 or cands[0][0] > cands[1][0]):
+            return cands[0][1]
+        pool = [c for c in numeric if c["name"] not in exclude]
+        return pool[0] if len(pool) == 1 else None
+
+    # "<metric> by <categorical>" -> GROUP BY (checked before plain count
+    # so "how many rows by region" groups instead of totalling).
+    if " by " in low:
+        after_by = low.split(" by ", 1)[1]
+        g_cands = _match_columns(after_by, cols, {"text"})
+        group_col, group_expr, group_label = None, None, None
+        if g_cands and g_cands[0][0] >= 2:
+            group_col = g_cands[0][1]["name"]
+            group_expr, group_label = f'"{group_col}"', group_col
+        elif "month" in after_by and dates:
+            group_col = dates[0]["name"]
+            group_expr = f'DATE_TRUNC(\'month\', "{group_col}")'
+            group_label = "month"
+        if group_col:
+            if re.search(r"\b(count|how many)\b", low):
+                base["force_sql"] = (f'SELECT {group_expr} AS "{group_label}", COUNT(*) AS row_count '
+                                     f'FROM "{table}" GROUP BY 1 ORDER BY 2 DESC')
+                base["dimension"] = group_label
+                return base
+            is_avg = "average" in low or "avg" in low
+            col = pick_numeric()
+            if col is None:
+                if len(numeric) > 1:
+                    return clarify(
+                        f"Which column should I {'average' if is_avg else 'total'} by {group_label} in '{display}'?",
+                        [f"{'Average' if is_avg else 'Total'} {c['name']} by {group_label} in {display}"
+                         for c in numeric])
+                return refuse(f"There is no numeric column to {'average' if is_avg else 'total'} in '{display}'.")
+            fn = "AVG" if is_avg else "SUM"
+            alias = f"{'average' if is_avg else 'total'}_{col['name']}"
+            base["force_sql"] = (f'SELECT {group_expr} AS "{group_label}", {fn}("{col["name"]}") AS "{alias}" '
+                                 f'FROM "{table}" GROUP BY 1 ORDER BY 2 DESC')
+            base["dimension"] = group_label
+            return base
+    # "how many rows / records" -> COUNT(*)
+    if re.search(r"how many (rows|records)|row count|number of (rows|records)", low):
+        base["force_sql"] = f'SELECT COUNT(*) AS row_count FROM "{table}"'
+        return base
+    # "show / list rows" -> SELECT * LIMIT 20
+    if re.search(r"^(show|list|display)\b", low.strip()) and ("row" in low or "data" in low or "all" in low):
+        base["force_sql"] = f'SELECT * FROM "{table}" LIMIT 20'
+        return base
+    # "top N [by <col>]" / "highest <col>" -> ORDER BY + LIMIT
+    m = re.search(r"\btop\s+(\d+)\b", low)
+    if m or re.search(r"\bhighest\b", low):
+        n = int(m.group(1)) if m else 5
+        n = max(1, min(n, 100))
+        cands = _match_columns(q, cols, {"integer", "float"})
+        if cands and cands[0][0] >= 3:
+            col = cands[0][1]["name"]
+        elif numeric:
+            col = numeric[0]["name"]
+        else:
+            col = None
+        if col:
+            base["force_sql"] = f'SELECT * FROM "{table}" ORDER BY "{col}" DESC LIMIT {n}'
+        else:
+            base["force_sql"] = f'SELECT * FROM "{table}" LIMIT {n}'
+        return base
+    # "total / sum / average of <numeric column>"
+    if re.search(r"\b(total|sum|average|avg)\b", low):
+        is_avg = "average" in low or "avg" in low
+        col = pick_numeric()
+        if col is None:
+            if len(numeric) > 1:
+                return clarify(
+                    f"Which column should I {'average' if is_avg else 'total'} in '{display}'?",
+                    [f"{'Average' if is_avg else 'Total'} {c['name']} in {display}" for c in numeric])
+            return refuse(f"There is no numeric column to {'average' if is_avg else 'total'} in '{display}'.")
+        fn = "AVG" if is_avg else "SUM"
+        alias = f"{'average' if is_avg else 'total'}_{col['name']}"
+        base["force_sql"] = f'SELECT {fn}("{col["name"]}") AS "{alias}" FROM "{table}"'
+        return base
+    return refuse(f"I couldn't match that question to the columns of '{display}'.")
 
 
 class QPState(TypedDict, total=False):
@@ -67,6 +252,7 @@ class QPState(TypedDict, total=False):
     lineage: dict
     cache_hit: bool
     use_cache: bool
+    upload: dict  # uploaded CSV dataset this question is over (generic path only)
 
 
 def _month_period(name: str):
@@ -156,7 +342,7 @@ def parse_question(q: str, prior: dict | None = None) -> dict:
             and not out["period"] and "trend" not in low and "over time" not in low:
         out.update(status="clarifying",
                    clarifying_question="Which churn period do you mean? Monthly churn rate needs a period.",
-                   clarifying_options=["Last month (Dec 2025)", "Last 3 months (Oct–Dec 2025)", "All 12 months of 2025"])
+                   clarifying_options=["Last month (Dec 2025)", "Last 3 months (Oct–Dec 2025)", "All months (2024–2025)"])
         return out
     # Ambiguity: vague performance question with no breakdown.
     if re.search(r"how (did|is)|performance|how .* do(ing)?", low) and "how many" not in low \
@@ -268,7 +454,7 @@ def build_sql(p: dict) -> str:
     return f"SELECT {select_aggs} FROM orders {where}"
 
 
-def _fix_sql(sql: str, error: str) -> str:
+def _fix_sql(sql: str, error: str, extra_cols: list[str] | None = None) -> str:
     """Deterministic corrector: use the exact DB error to repair the draft."""
     # Invalid DATE literal (e.g. month 13): clamp the month/day to a valid date.
     # (sqlglot may rewrite DATE '...' as CAST('...' AS DATE), so match the quoted date.)
@@ -287,7 +473,9 @@ def _fix_sql(sql: str, error: str) -> str:
     if bad:
         repl = mapping.get(bad.lower())
         if not repl:
-            all_cols = [c for cols in SCHEMA.values() for c in cols]
+            # Uploaded-table columns first when correcting upload SQL, so a
+            # near-miss like "amout" resolves to the dataset's own column.
+            all_cols = list(extra_cols or []) + [c for cols in SCHEMA.values() for c in cols]
             close = difflib.get_close_matches(bad.lower(), all_cols, n=1)
             repl = close[0] if close else "amount"
         fixed = re.sub(rf"\b{re.escape(bad)}\b", repl, sql, flags=re.I)
@@ -298,11 +486,35 @@ def _fix_sql(sql: str, error: str) -> str:
 
 # ---- LangGraph nodes (each is a real step; the graph is invoked on every ask) ----
 def node_classify(state: QPState) -> QPState:
-    parsed = parse_question(state["question"], state.get("prior"))
+    # Uploaded-data path first: a question naming an uploaded dataset (e.g.
+    # "total amount in sample sales") also contains words like "sales" that
+    # would otherwise match a demo metric — the dataset wins.
+    up = parse_upload_question(state["question"], state.get("workspace", "demo"))
+    if up is not None:
+        return {**up, "attempts": [], "cache_hit": False, "error": ""}
+    prior = state.get("prior") or {}
+    if prior.get("metric") == "uploaded_data":
+        # Follow-ups over uploaded data need the dataset named again — the
+        # generic path only runs when the question names the dataset.
+        return {"question": state["question"], "intent": "metric_lookup", "metrics": [],
+                "dimension": None, "period": None, "filters": {}, "status": "refused",
+                "clarifying_question": None, "clarifying_options": [],
+                "refusal": "Follow-ups over uploaded data need the dataset named in the question. "
+                           "Ask the full question again, for example 'Total amount by region in sample sales'.",
+                "attempts": [], "cache_hit": False, "error": ""}
+    parsed = parse_question(state["question"], prior)
     return {**parsed, "attempts": [], "cache_hit": False, "error": ""}
 
 
 def node_resolve(state: QPState) -> QPState:
+    if state.get("metrics") == ["uploaded_data"]:
+        up = state.get("upload") or {}
+        return {"lineage": {"metric": "uploaded_data",
+                            "definition": f"Uploaded CSV '{up.get('filename', '')}' — {up.get('row_count', '?')} rows",
+                            "model": up.get("table", ""),
+                            "layer_version": layer.version,
+                            "dimensions": [c["name"] for c in up.get("columns", [])],
+                            "owner": "upload"}}
     metric = state["metrics"][0]
     m = layer.metric(metric) or {}
     return {"lineage": {"metric": metric, "definition": m.get("definition", ""),
@@ -311,6 +523,12 @@ def node_resolve(state: QPState) -> QPState:
 
 
 def node_plan(state: QPState) -> QPState:
+    if state.get("metrics") == ["uploaded_data"]:
+        up = state.get("upload") or {}
+        steps = [{"step": 1, "action": f"Question is over the uploaded dataset '{up.get('dataset_name', '')}'"},
+                 {"step": 2, "action": "Build SQL over its columns"},
+                 {"step": 3, "action": "Validate SQL with sqlglot, then execute read-only with limits"}]
+        return {"plan_steps": steps}
     steps = [{"step": 1, "action": f"Resolve metric {state['metrics'][0]} from the semantic layer"},
              {"step": 2, "action": f"Draft SQL (dimension: {state.get('dimension') or 'none'}, "
                                    f"period: {(state.get('period') or {}).get('label', 'all time')})"},
@@ -327,7 +545,7 @@ def node_draft(state: QPState) -> QPState:
 
 def node_validate(state: QPState) -> QPState:
     try:
-        v = validate_sql(state["sql"])
+        v = validate_sql(state["sql"], workspace=state.get("workspace", "demo"))
         return {"validation": v, "sql": v["sql"], "status": "validated"}
     except ValidationError as e:
         return {"validation": {"ok": False, "rule": e.rule, "message": e.message},
@@ -354,7 +572,10 @@ def node_execute(state: QPState) -> QPState:
 
 
 def node_correct(state: QPState) -> QPState:
-    fixed = _fix_sql(state["sql"], state.get("error", ""))
+    extra = None
+    if state.get("metrics") == ["uploaded_data"]:
+        extra = [c["name"] for c in (state.get("upload") or {}).get("columns", [])]
+    fixed = _fix_sql(state["sql"], state.get("error", ""), extra_cols=extra)
     if fixed == state["sql"]:
         return {"status": "failed", "error": state.get("error", "") + " (correction made no change; stopping)"}
     return {"sql": fixed, "status": "corrected"}
@@ -365,6 +586,12 @@ def node_explain(state: QPState) -> QPState:
         return {"explanation": f"The query could not be executed after {len(state.get('attempts', []))} attempt(s). "
                                f"Last error: {state.get('error', '')}. This looks like a modelling problem, not a wording problem.",
                 "chart_spec": select_chart([], [])}
+    if state.get("metrics") == ["uploaded_data"]:
+        up = state.get("upload") or {}
+        template = explain_upload(state["question"], up.get("dataset_name", "uploaded data"),
+                                  state.get("columns", []), state.get("rows", []))
+        return {"explanation": llm_explain(state["question"], template),
+                "chart_spec": select_chart(state.get("columns", []), state.get("rows", []))}
     metric = state["metrics"][0]
     definition = (state.get("lineage") or {}).get("definition", "")
     template = explain(state["question"], metric, definition, state.get("columns", []),
@@ -439,12 +666,16 @@ def _norm_rows(rows):
 def _ensure_demo_db():
     """Make sure the target database holds the demo dataset.
 
-    DuckDB: create the file on first boot. Postgres (DATABASE_URL set):
-    seed the empty database once — if the tables are missing, seed them so a
-    fresh managed Postgres (e.g. Neon) just works; if seeding fails, log and
+    DuckDB: create the file on first boot, and reseed whenever the stored
+    seed version differs from the code's SEED_VERSION — otherwise a bigger
+    dataset would silently keep serving the stale small file.
+    Postgres (DATABASE_URL set): seed the empty database once — if the
+    tables are missing or the seed version differs, seed them so a fresh
+    managed Postgres (e.g. Neon) just works; if seeding fails, log and
     keep booting (asks will fail loudly with the real DB error instead).
     """
     import logging
+    from .seed import SEED_VERSION, seed_version_duckdb, seed_version_postgres
     if settings.dialect == "postgres":
         try:
             from sqlalchemy import create_engine, text
@@ -452,7 +683,7 @@ def _ensure_demo_db():
             with engine.connect() as conn:
                 exists = conn.execute(
                     text("SELECT to_regclass('public.orders')")).scalar()
-            if not exists:
+            if not exists or seed_version_postgres(settings.database_url) != SEED_VERSION:
                 from .seed import seed_postgres
                 seed_postgres(settings.database_url)
                 logging.getLogger("querypilot").info(
@@ -463,7 +694,7 @@ def _ensure_demo_db():
                 "database is seeded with: python -m app.seed --postgres", e)
         return
     db = Path(settings.database_path)
-    if not db.exists():
+    if not db.exists() or seed_version_duckdb(db) != SEED_VERSION:
         seed(db)
 
 
@@ -488,6 +719,7 @@ def run_ask(question: str, workspace: str = "demo", prior: dict | None = None,
         "status": result.get("status", "failed"),
         "intent": result.get("intent"),
         "metric": (result.get("metrics") or [None])[0],
+        "dataset": (result.get("upload") or {}).get("dataset_name"),
         "sql": result.get("sql"),
         "layer_version": layer.version,
         "validation": result.get("validation", {}),
