@@ -19,6 +19,15 @@ const DEMO_QUESTIONS = [
   'What is total revenue and total orders by month?',
 ]
 
+const DEMO_GROUPS: { label: string; color: string; questions: string[] }[] = [
+  { label: 'Revenue', color: '#a78bfa', questions: DEMO_QUESTIONS.slice(0, 3).concat(DEMO_QUESTIONS.slice(11)) },
+  { label: 'Products', color: '#22d3ee', questions: DEMO_QUESTIONS.slice(3, 5) },
+  { label: 'Orders & customers', color: '#fbbf24', questions: DEMO_QUESTIONS.slice(5, 9) },
+  { label: 'Churn', color: '#fb7185', questions: DEMO_QUESTIONS.slice(9, 11) },
+]
+
+const PIPELINE_STEPS = ['Classify', 'Resolve', 'Plan', 'Draft', 'Validate', 'Execute', 'Explain']
+
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December']
 
 function resolveClarifying(run: any, option: string): string {
@@ -32,6 +41,33 @@ function resolveClarifying(run: any, option: string): string {
   if (option === 'By region') return `What is ${(run.metric || 'total_revenue').replace(/_/g, ' ')} by region?`
   return option
 }
+
+function metricIcon(name: string): string {
+  if (name.includes('revenue')) return '💰'
+  if (name.includes('order')) return '🧾'
+  if (name.includes('average')) return '📊'
+  if (name.includes('customer')) return '👥'
+  if (name.includes('churn')) return '📉'
+  return '◆'
+}
+
+function prettyMetric(name: string): string {
+  return name.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+const Icon = ({ d, children }: { d?: string; children?: React.ReactNode }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {d ? <path d={d} /> : children}
+  </svg>
+)
+const ICONS: Record<string, React.ReactNode> = {
+  ask: <Icon><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></Icon>,
+  semantic: <Icon><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" /><polyline points="2 12 12 17 22 12" /></Icon>,
+  history: <Icon><circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 13.5" /></Icon>,
+  insights: <Icon d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />,
+  eval: <Icon><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><polyline points="9 11.5 11 13.5 15 9.5" /></Icon>,
+}
+const TABS = ['ask', 'semantic', 'history', 'insights', 'eval'] as const
 
 export default function App() {
   const [tab, setTab] = useState('ask')
@@ -93,45 +129,105 @@ export default function App() {
     setTab('insights')
   }
 
+  const healthOk = health?.status === 'ok'
+  const healthKnown = !!health?.status
+
   return (
     <div className="app">
-      <header>
-        <h1>QueryPilot</h1>
-        <p>Trusted text-to-SQL over a governed semantic layer · <span className="badge">Sample data</span></p>
-        <p className="health">Backend: {health?.status || '…'} · LLM mode: {health?.llm_mode || '…'} · Layer {health?.layer_version || '…'}</p>
+      <header className="topbar">
+        <div className="brand">
+          <div className="logo-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2 4.5 13.5H11L9.5 22 19 9.5h-6.5L13 2z" />
+            </svg>
+          </div>
+          <div>
+            <h1>Query<span>Pilot</span></h1>
+            <p>Trusted text-to-SQL · governed semantic layer</p>
+          </div>
+        </div>
+        <div className="status">
+          <span className={`pill ${healthOk ? 'ok' : healthKnown ? 'down' : ''}`}>
+            <span className="dot" />
+            {healthOk ? 'Live' : healthKnown ? 'Unreachable' : 'Checking…'}
+            {health?.llm_mode && <span className="hide-sm">· {health.llm_mode}</span>}
+          </span>
+          <span className="badge-sample">Sample data</span>
+        </div>
       </header>
-      <nav>
-        {['ask', 'semantic', 'history', 'insights', 'eval'].map((t) => (
-          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)}>{t[0].toUpperCase() + t.slice(1)}</button>
+
+      <nav className="tabbar" aria-label="Sections">
+        {TABS.map((t) => (
+          <button key={t} className={tab === t ? 'active' : ''} onClick={() => setTab(t)} aria-current={tab === t ? 'page' : undefined}>
+            {ICONS[t]}{t[0].toUpperCase() + t.slice(1)}
+          </button>
         ))}
       </nav>
 
       {tab === 'ask' && (
         <section>
-          <div className="card">
-            <label>Workspace
-              <select value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
-                <option value="demo">demo (sample e-commerce)</option>
-              </select>
-            </label>
-            <textarea value={question} onChange={(e) => setQuestion(e.target.value)} rows={3}
-              placeholder="Ask a business question, e.g. What is total revenue by month?" />
-            <button className="primary" disabled={loading} onClick={() => ask()}>{loading ? 'Asking…' : 'Ask'}</button>
-            <div className="chips">
-              {DEMO_QUESTIONS.map((q) => (
-                <button key={q} onClick={() => { setQuestion(q); ask(q) }}>{q}</button>
-              ))}
-            </div>
+          <div className="hero">
+            <h2>Ask your data <span className="grad">anything.</span></h2>
+            <p>Plain English in, validated SQL out — with the definition, the chart and the lineage, every time. No guessing, no hidden numbers.</p>
           </div>
-          {error && <div className="card error">{error}</div>}
-          {loading && <div className="card">Planning, validating and executing…</div>}
-          {run && <Result run={run} onClarify={(opt) => ask(resolveClarifying(run, opt))} onSave={saveInsight} />}
+          <div className="card composer">
+            <label htmlFor="workspace">Workspace</label>
+            <div className="composer-row">
+              <select id="workspace" value={workspace} onChange={(e) => setWorkspace(e.target.value)}>
+                <option value="demo">demo · sample e-commerce</option>
+              </select>
+            </div>
+            <textarea id="question" value={question} onChange={(e) => setQuestion(e.target.value)} rows={3}
+              placeholder="Ask a business question, e.g. What is total revenue by month?"
+              onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) ask() }} />
+            <div className="composer-row">
+              <button className="btn btn-primary ask-btn" disabled={loading} onClick={() => ask()}>
+                {loading ? 'Asking…' : 'Ask'}
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" /></svg>
+              </button>
+            </div>
+            <p className="composer-hint">Every answer is planned against the semantic layer and checked with sqlglot before it runs. · Layer {health?.layer_version || '…'}</p>
+          </div>
+
+          <div className="chip-groups">
+            {DEMO_GROUPS.map((g) => (
+              <div className="chip-group" key={g.label}>
+                <div className="chip-group-label"><span className="swatch" style={{ background: g.color }} />{g.label}</div>
+                <div className="chips">
+                  {g.questions.map((q) => (
+                    <button className="chip" key={q} onClick={() => { setQuestion(q); ask(q) }}>{q}</button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {error && (
+            <div className="state-panel state-red">
+              <div className="state-icon">⚠️</div>
+              <h3>Couldn’t reach the backend</h3>
+              <p>{error}</p>
+            </div>
+          )}
+          {loading && (
+            <div className="card stepper" aria-live="polite">
+              <div className="stepper-title"><span className="spinner" />Running your question</div>
+              <div className="steps">
+                {PIPELINE_STEPS.map((s) => (
+                  <div className="step" key={s}><div className="step-dot" /><div className="step-label">{s}</div></div>
+                ))}
+              </div>
+              <div className="stepper-bar"><i /></div>
+            </div>
+          )}
+          {run && <Result key={run.id} run={run} onClarify={(opt) => ask(resolveClarifying(run, opt))} onSave={saveInsight} />}
           {run && run.status === 'executed' && (
-            <div className="card">
+            <div className="card followup">
               <h3>Follow-up</h3>
-              <p className="muted">Reuses this run's metric ({run.metric}) — try “by region” or “in March”.</p>
-              <input value={followUp} onChange={(e) => setFollowUp(e.target.value)} placeholder="e.g. by region" />
-              <button className="primary" onClick={sendFollowUp}>Ask follow-up</button>
+              <p className="muted">Reuses this run’s metric ({run.metric}) — try “by region” or “in March”.</p>
+              <input value={followUp} onChange={(e) => setFollowUp(e.target.value)} placeholder="e.g. by region"
+                onKeyDown={(e) => { if (e.key === 'Enter') sendFollowUp() }} />
+              <button className="btn btn-primary" disabled={loading} onClick={sendFollowUp}>Ask follow-up</button>
             </div>
           )}
         </section>
@@ -140,22 +236,43 @@ export default function App() {
       {tab === 'semantic' && (
         <section>
           <h2>Semantic explorer</h2>
-          {metrics.map((m: any) => (
-            <div className="card" key={m.name}>
-              <h3>{m.name}</h3>
-              <p>{m.description}</p>
-              <p className="muted">Definition: {m.definition} · Owner: {m.owner} · Model: {m.model}</p>
-              <p className="muted">Dimensions: {(m.dimensions || []).join(', ')}</p>
-            </div>
-          ))}
+          <p className="section-sub">The governed source of truth. The planner may only use the metrics, dimensions and joins defined here — nothing is invented.</p>
+          <div className="metric-grid">
+            {metrics.map((m: any, i: number) => (
+              <div className={`card metric-card accent-${i % 5}`} key={m.name}>
+                <div className="metric-top">
+                  <div className="metric-icon" aria-hidden="true">{metricIcon(m.name)}</div>
+                  <h3>{m.name}</h3>
+                </div>
+                <p>{m.description}</p>
+                <p className="muted">Definition: {m.definition}</p>
+                <div className="tag-row">
+                  <span className="tag">Owner: {m.owner}</span>
+                  <span className="tag">Model: {m.model}</span>
+                </div>
+                <div className="tag-row">
+                  {(m.dimensions || []).map((d: string) => <span className="tag dim" key={d}>{d}</span>)}
+                </div>
+              </div>
+            ))}
+          </div>
           {models && (
             <div className="card">
               <h3>Models &amp; joins</h3>
-              <p className="muted">PII blocked: customers.email, customers.phone</p>
+              <p className="muted">PII is blocked at validation — it never reaches the database.</p>
               {(models.models || []).map((m: any) => (
-                <p key={m.name}><b>{m.name}</b>: {(m.columns || []).map((c: any) => c.name + (c.pii ? ' (PII)' : '')).join(', ')}</p>
+                <div className="model-line" key={m.name}>
+                  <b>{m.name}</b>{' · '}
+                  {(m.columns || []).map((c: any, ci: number) => (
+                    <span key={c.name}>{ci > 0 ? ', ' : ''}{c.name}{c.pii ? <span className="tag pii" style={{ marginLeft: 4 }}>PII</span> : ''}</span>
+                  ))}
+                </div>
               ))}
-              <p className="muted">Allowed joins: {(models.joins || []).map((j: any) => `${j.from} → ${j.to}`).join(' · ')}</p>
+              <div className="join-line">
+                {(models.joins || []).map((j: any, i: number) => (
+                  <span className="join-chip" key={i}>{j.from} → {j.to}</span>
+                ))}
+              </div>
             </div>
           )}
         </section>
@@ -164,28 +281,43 @@ export default function App() {
       {tab === 'history' && (
         <section>
           <h2>History</h2>
-          {history.length === 0 && <p className="muted">No runs yet. Ask a question first.</p>}
-          {history.map((r: any) => (
-            <div className="card" key={r.id} onClick={async () => { setRun(await api.run(r.id)); setTab('ask') }} style={{ cursor: 'pointer' }}>
-              <b>{r.question}</b>
-              <p className="muted">{r.status} · {r.metric || '—'} · {r.row_count} rows · {r.duration_ms} ms · ${r.cost ?? 0}</p>
-            </div>
-          ))}
+          <p className="section-sub">Every past answer, with its exact SQL and cost. Tap one to reopen it.</p>
+          {history.length === 0 && (
+            <div className="card empty-state"><div className="empty-icon">🕘</div>No runs yet. Ask a question first.</div>
+          )}
+          <div className="timeline">
+            {history.map((r: any) => (
+              <div className={`timeline-item st-${r.status}`} key={r.id} onClick={async () => { setRun(await api.run(r.id)); setTab('ask') }}>
+                <b>{r.question}</b>
+                <p className="muted" style={{ margin: 0 }}>
+                  <span className={`status-dot ${r.status}`} />{r.status} · {r.metric || '—'} · {r.row_count} rows · {r.duration_ms} ms · ${r.cost ?? 0}
+                </p>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 
       {tab === 'insights' && (
         <section>
           <h2>Scheduled insights</h2>
-          {insights.length === 0 && <p className="muted">No saved insights yet. Save a run from the Ask tab.</p>}
+          <p className="section-sub">Saved questions that re-run on a cadence and alert only when a threshold is crossed.</p>
+          {insights.length === 0 && (
+            <div className="card empty-state"><div className="empty-icon">🔔</div>No saved insights yet. Save a run from the Ask tab.</div>
+          )}
           {insights.map((ins: any) => (
-            <div className="card" key={ins.id}>
-              <b>{ins.question}</b>
-              <p className="muted">Cadence: {ins.cadence} · Status: {ins.status} · Threshold: {ins.threshold ?? 'none'}</p>
-              <button onClick={async () => { await api.patchInsight(ins.id, { status: ins.status === 'active' ? 'paused' : 'active' }); const d = await api.insights(); setInsights(d.insights || []) }}>
-                {ins.status === 'active' ? 'Pause' : 'Resume'}
-              </button>{' '}
-              <button onClick={async () => { await api.deleteInsight(ins.id); const d = await api.insights(); setInsights(d.insights || []) }}>Delete</button>
+            <div className="card insight-card" key={ins.id}>
+              <div className="insight-head">
+                <b>{ins.question}</b>
+                <span className={`status-pill ${ins.status === 'active' ? 'active' : 'paused'}`}>{ins.status}</span>
+              </div>
+              <p className="muted" style={{ margin: 0 }}>Cadence: {ins.cadence} · Threshold: {ins.threshold ?? 'none'}</p>
+              <div className="insight-actions">
+                <button className="btn btn-sm" onClick={async () => { await api.patchInsight(ins.id, { status: ins.status === 'active' ? 'paused' : 'active' }); const d = await api.insights(); setInsights(d.insights || []) }}>
+                  {ins.status === 'active' ? '⏸ Pause' : '▶ Resume'}
+                </button>
+                <button className="btn btn-sm btn-danger" onClick={async () => { await api.deleteInsight(ins.id); const d = await api.insights(); setInsights(d.insights || []) }}>Delete</button>
+              </div>
             </div>
           ))}
         </section>
@@ -194,22 +326,37 @@ export default function App() {
       {tab === 'eval' && (
         <section>
           <h2>Eval &amp; safety</h2>
-          <p className="muted">Runs the real ask path on the 20-case golden set, plus the safety suite. Numbers come from a live run, never from the PRD targets.</p>
-          <button className="primary" disabled={loading} onClick={runEval}>{loading ? 'Running…' : 'Run evaluation'}</button>
+          <p className="section-sub">Runs the real ask path on the 20-case golden set, plus the safety suite. Numbers come from a live run, never from the PRD targets.</p>
+          <button className="btn btn-primary" disabled={loading} onClick={runEval}>{loading ? 'Running…' : '▶ Run evaluation'}</button>
+          {evalResult && (
+            <div className="card score-hero">
+              <div>
+                <div className="score-number">{(evalResult.execution_accuracy * 100).toFixed(0)}%</div>
+                <div className="score-caption">Execution accuracy · {evalResult.golden_cases} golden cases</div>
+              </div>
+              <div className="score-bars">
+                <ScoreBar label="Execution accuracy" value={evalResult.execution_accuracy} />
+                <ScoreBar label="Valid SQL rate" value={evalResult.valid_sql_rate} />
+                <ScoreBar label="Safety suite blocked" value={evalResult.safety_suite.pass_rate} text={`${evalResult.safety_suite.blocked}/${evalResult.safety_suite.total} blocked`} />
+                <p className="muted" style={{ margin: 0 }}>
+                  Correction success: {evalResult.correction_success ? 'yes' : 'no'} ({evalResult.correction_attempts_on_broken_draft} attempt(s) on the broken draft)
+                </p>
+              </div>
+            </div>
+          )}
           {evalResult && (
             <div className="card">
-              <p><b>Execution accuracy:</b> {(evalResult.execution_accuracy * 100).toFixed(1)}% ({evalResult.golden_cases} cases)</p>
-              <p><b>Valid SQL rate:</b> {(evalResult.valid_sql_rate * 100).toFixed(1)}%</p>
-              <p><b>Correction success:</b> {evalResult.correction_success ? 'yes' : 'no'} ({evalResult.correction_attempts_on_broken_draft} attempt(s) on the broken draft)</p>
-              <p><b>Safety suite:</b> {evalResult.safety_suite.blocked}/{evalResult.safety_suite.total} blocked ({(evalResult.safety_suite.pass_rate * 100).toFixed(0)}%)</p>
-              <table>
-                <thead><tr><th>ID</th><th>Category</th><th>Expected</th><th>Got</th><th>Pass</th></tr></thead>
-                <tbody>
-                  {evalResult.per_case.map((c: any) => (
-                    <tr key={c.id}><td>{c.id}</td><td>{c.category}</td><td>{c.expected}</td><td>{c.got}</td><td>{c.passed ? '✓' : '✗'}</td></tr>
-                  ))}
-                </tbody>
-              </table>
+              <h3>Per-case results</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>ID</th><th>Category</th><th>Expected</th><th>Got</th><th>Pass</th></tr></thead>
+                  <tbody>
+                    {evalResult.per_case.map((c: any) => (
+                      <tr key={c.id}><td>{c.id}</td><td>{c.category}</td><td>{c.expected}</td><td>{c.got}</td><td className={c.passed ? 'pass' : 'fail'}>{c.passed ? '✓' : '✗'}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </section>
@@ -218,63 +365,125 @@ export default function App() {
   )
 }
 
+function ScoreBar({ label, value, text }: { label: string; value: number; text?: string }) {
+  const pct = Math.round(value * 100)
+  return (
+    <div className="score-bar-row">
+      <div className="bar-label"><span>{label}</span><span>{text || `${pct}%`}</span></div>
+      <div className="bar-track"><div className="bar-fill" style={{ width: `${pct}%` }} /></div>
+    </div>
+  )
+}
+
 function Result({ run, onClarify, onSave }: { run: any; onClarify: (o: string) => void; onSave: () => void }) {
+  const [copied, setCopied] = useState(false)
+  const [voted, setVoted] = useState('')
+  async function copySql() {
+    try { await navigator.clipboard.writeText(run.sql || '') } catch { /* clipboard unavailable */ }
+    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
   if (run.status === 'clarifying') {
     return (
-      <div className="card">
+      <div className="state-panel state-blue">
+        <div className="state-icon">🤔</div>
         <h3>One quick question</h3>
         <p>{run.clarifying_question}</p>
-        <div className="chips">{(run.clarifying_options || []).map((o: string) => (
-          <button key={o} onClick={() => onClarify(o)}>{o}</button>
+        <div className="option-cards">{(run.clarifying_options || []).map((o: string) => (
+          <button className="option-card" key={o} onClick={() => onClarify(o)}>{o}</button>
         ))}</div>
-        <p className="muted">Asking back is a success state — better than a confident wrong number.</p>
+        <p className="muted" style={{ marginTop: 14 }}>Asking back is a success state — better than a confident wrong number.</p>
       </div>
     )
   }
   if (run.status === 'refused' || run.status === 'blocked') {
     return (
-      <div className="card error">
+      <div className="state-panel state-amber">
+        <div className="state-icon">{run.status === 'blocked' ? '🛡️' : '🚫'}</div>
         <h3>{run.status === 'blocked' ? 'Blocked by the validator' : 'Cannot answer from the modelled data'}</h3>
         <p>{run.refusal}</p>
-        <p className="muted">Nearest answerable question: “What is total revenue by month?”</p>
+        <div className="try-instead">
+          <span className="muted">Nearest answerable question:</span>
+          <button className="btn btn-sm" onClick={() => onClarify('What is total revenue by month?')}>What is total revenue by month? →</button>
+        </div>
       </div>
     )
   }
   if (run.status === 'failed') {
     return (
-      <div className="card error">
+      <div className="state-panel state-red">
+        <div className="state-icon">⚠️</div>
         <h3>Execution failed</h3>
         <p>{run.explanation}</p>
-        <pre>{(run.attempts || []).map((a: any) => `#${a.attempt}: ${a.error}`).join('\n')}</pre>
+        <div className="code-panel"><pre>{(run.attempts || []).map((a: any) => `#${a.attempt}: ${a.error}`).join('\n')}</pre></div>
+        <div className="try-instead">
+          <span className="muted">Try narrowing the question, or:</span>
+          <button className="btn btn-sm" onClick={() => onClarify('What is total revenue by month?')}>What is total revenue by month? →</button>
+        </div>
       </div>
     )
   }
+  const chartLabel = run.chart_spec?.type && run.chart_spec.type !== 'none'
+    ? `${run.chart_spec.type === 'stat' ? 'Single value' : run.chart_spec.type === 'line' ? 'Trend' : 'Comparison'} · ${prettyMetric(run.metric || 'result')}`
+    : null
   return (
-    <div className="card">
-      <Chart spec={run.chart_spec} />
-      <p>{run.explanation}</p>
+    <div className="card glow">
+      {run.chart_spec?.type === 'stat' ? (
+        <div className="result-hero">
+          <div className="result-metric">{prettyMetric(run.metric || 'Result')}</div>
+          <Chart spec={run.chart_spec} />
+        </div>
+      ) : (
+        <div className="chart-panel">
+          <h4>{chartLabel || prettyMetric(run.metric || 'Result')}</h4>
+          <p className="chart-sub">{run.lineage?.definition || ''}</p>
+          <Chart spec={run.chart_spec} />
+        </div>
+      )}
+      <p className="lead">{run.explanation}</p>
       {run.rows?.length === 0 && <p className="muted">Empty result — the filters and period returned no rows. This is not the same as zero.</p>}
+      <div className="actions-row">
+        <button className="btn btn-sm" disabled={!!voted} onClick={() => { api.feedback(run.id, 'up'); setVoted('up') }}>{voted === 'up' ? '✓ Helpful' : '👍 Helpful'}</button>
+        <button className="btn btn-sm" disabled={!!voted} onClick={() => { api.feedback(run.id, 'down'); setVoted('down') }}>{voted === 'down' ? '✓ Noted' : '👎 Wrong'}</button>
+        <button className="btn btn-sm btn-primary" onClick={onSave}>＋ Save as scheduled insight</button>
+      </div>
       <details>
         <summary>Result table ({run.row_count} rows)</summary>
-        <table>
-          <thead><tr>{(run.columns || []).map((c: string) => <th key={c}>{c}</th>)}</tr></thead>
-          <tbody>
-            {(run.rows || []).slice(0, 20).map((r: any[], i: number) => (
-              <tr key={i}>{r.map((v, j) => <td key={j}>{String(v)}</td>)}</tr>
-            ))}
-          </tbody>
-        </table>
+        <div className="table-wrap">
+          <table>
+            <thead><tr>{(run.columns || []).map((c: string) => <th key={c}>{c}</th>)}</tr></thead>
+            <tbody>
+              {(run.rows || []).slice(0, 20).map((r: any[], i: number) => (
+                <tr key={i}>{r.map((v, j) => <td key={j}>{String(v)}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </details>
       <details>
         <summary>SQL, lineage &amp; validation</summary>
-        <pre>{run.sql}</pre>
+        <div className="code-panel">
+          <div className="code-panel-head"><span>Validated SQL</span><button className="btn btn-sm" onClick={copySql}>{copied ? '✓ Copied' : 'Copy SQL'}</button></div>
+          <pre>{run.sql}</pre>
+        </div>
         <p className="muted">Metric: {run.metric} — {run.lineage?.definition}</p>
-        <p className="muted">Layer v{run.layer_version} · Validation: {run.validation?.rule || 'passed'} · Attempts: {Math.max(run.attempts?.length || 0, 1)} · Cache: {run.cache_hit ? 'hit' : 'miss'} · Cost: ${run.cost ?? 0} · {run.duration_ms} ms · LLM mode: {run.llm_mode}</p>
-        <p className="muted">Plan: {(run.plan_steps || []).map((s: any) => s.action).join(' → ')}</p>
+        <div className="meta-grid">
+          <div className="meta-item"><div className="k">Layer</div><div className="v">v{run.layer_version}</div></div>
+          <div className="meta-item"><div className="k">Validation</div><div className="v">{run.validation?.rule || 'passed'}</div></div>
+          <div className="meta-item"><div className="k">Attempts</div><div className="v">{Math.max(run.attempts?.length || 0, 1)}</div></div>
+          <div className="meta-item"><div className="k">Cache</div><div className="v">{run.cache_hit ? 'hit' : 'miss'}</div></div>
+          <div className="meta-item"><div className="k">Cost</div><div className="v">${run.cost ?? 0}</div></div>
+          <div className="meta-item"><div className="k">Duration</div><div className="v">{run.duration_ms} ms</div></div>
+          <div className="meta-item"><div className="k">LLM mode</div><div className="v">{run.llm_mode}</div></div>
+        </div>
+        <div className="plan-flow">
+          {(run.plan_steps || []).map((s: any, i: number) => (
+            <React.Fragment key={i}>
+              {i > 0 && <span className="plan-arrow">→</span>}
+              <span className="plan-chip">{s.action}</span>
+            </React.Fragment>
+          ))}
+        </div>
       </details>
-      <button onClick={() => api.feedback(run.id, 'up')}>👍 Helpful</button>{' '}
-      <button onClick={() => api.feedback(run.id, 'down')}>👎 Wrong</button>{' '}
-      <button onClick={onSave}>Save as scheduled insight</button>
     </div>
   )
 }
