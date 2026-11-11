@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from decimal import Decimal
 
-import httpx
+from .http import post_json
 
 
 def _num(v):
@@ -65,12 +65,12 @@ def llm_explain(question: str, template: str) -> str:
     if not key:
         return template
     try:
-        r = httpx.post("https://api.groq.com/openai/v1/chat/completions",
-                       headers={"Authorization": f"Bearer {key}"},
-                       json={"model": "llama-3.3-70b-versatile",
-                             "messages": [{"role": "user",
-                                           "content": f"Rewrite this analytics explanation in plain English, keeping every number exact:\n{template}"}]},
-                       timeout=15)
+        r = post("https://api.groq.com/openai/v1/chat/completions",
+                 {"model": "llama-3.3-70b-versatile",
+                  "messages": [{"role": "user",
+                                "content": f"Rewrite this analytics explanation in plain English, keeping every number exact:\n{template}"}]},
+                 headers={"Authorization": f"Bearer {key}"},
+                 timeout=15)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"].strip()
     except Exception:

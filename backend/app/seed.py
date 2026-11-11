@@ -25,27 +25,18 @@ PRODUCTS = [
 ]
 
 
-def seed(db_path: Path) -> dict:
+def generate_rows() -> dict:
+    """Deterministic demo rows (seed 42), shared by the DuckDB and Postgres
+    seeders so both databases hold the exact same sample dataset."""
     rng = random.Random(42)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        db_path.unlink()
-    con = duckdb.connect(str(db_path))
-    con.execute("CREATE TABLE customers (id INTEGER, name VARCHAR, email VARCHAR, phone VARCHAR, region VARCHAR, channel VARCHAR, created_at DATE)")
-    con.execute("CREATE TABLE products (id INTEGER, name VARCHAR, category VARCHAR, price DECIMAL(10,2))")
-    con.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, order_date DATE, amount DECIMAL(10,2), quantity INTEGER, region VARCHAR, channel VARCHAR, status VARCHAR)")
-    con.execute("CREATE TABLE subscriptions (id INTEGER, customer_id INTEGER, plan VARCHAR, status VARCHAR, started_at DATE, ended_at DATE, monthly_price DECIMAL(10,2))")
-
     customers = []
     for i in range(1, 201):
         region = REGIONS[i % 4] if i % 7 else rng.choice(REGIONS)
         channel = CHANNELS[i % 3]
         created = date(2024, 1, 1) + timedelta(days=rng.randrange(0, 700))
         customers.append((i, f"Customer {i}", f"customer{i}@example.com", f"+91-90000{i:05d}", region, channel, created))
-    con.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?,?)", customers)
 
-    for i, (name, cat, price) in enumerate(PRODUCTS, start=1):
-        con.execute("INSERT INTO products VALUES (?,?,?,?)", [i, name, cat, price])
+    products = [(i, name, cat, price) for i, (name, cat, price) in enumerate(PRODUCTS, start=1)]
 
     orders = []
     oid = 1
@@ -64,7 +55,6 @@ def seed(db_path: Path) -> dict:
             status = "completed" if rng.random() < 0.94 else "cancelled"
             orders.append((oid, cust, prod, date(2025, month, day), amount, qty, region, channel, status))
             oid += 1
-    con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)", orders)
 
     subs = []
     for i in range(1, 121):
@@ -83,12 +73,75 @@ def seed(db_path: Path) -> dict:
         else:
             status, ended = "paused", None
         subs.append((i, cust, plan, status, started, ended, price))
-    con.executemany("INSERT INTO subscriptions VALUES (?,?,?,?,?,?,?)", subs)
+    return {"customers": customers, "products": products, "orders": orders, "subscriptions": subs}
+
+
+def seed(db_path: Path) -> dict:
+    rows = generate_rows()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    if db_path.exists():
+        db_path.unlink()
+    con = duckdb.connect(str(db_path))
+    con.execute("CREATE TABLE customers (id INTEGER, name VARCHAR, email VARCHAR, phone VARCHAR, region VARCHAR, channel VARCHAR, created_at DATE)")
+    con.execute("CREATE TABLE products (id INTEGER, name VARCHAR, category VARCHAR, price DECIMAL(10,2))")
+    con.execute("CREATE TABLE orders (id INTEGER, customer_id INTEGER, product_id INTEGER, order_date DATE, amount DECIMAL(10,2), quantity INTEGER, region VARCHAR, channel VARCHAR, status VARCHAR)")
+    con.execute("CREATE TABLE subscriptions (id INTEGER, customer_id INTEGER, plan VARCHAR, status VARCHAR, started_at DATE, ended_at DATE, monthly_price DECIMAL(10,2))")
+    con.executemany("INSERT INTO customers VALUES (?,?,?,?,?,?,?)", rows["customers"])
+    con.executemany("INSERT INTO products VALUES (?,?,?,?)", rows["products"])
+    con.executemany("INSERT INTO orders VALUES (?,?,?,?,?,?,?,?,?)", rows["orders"])
+    con.executemany("INSERT INTO subscriptions VALUES (?,?,?,?,?,?,?)", rows["subscriptions"])
     con.close()
-    return {"customers": len(customers), "products": len(PRODUCTS), "orders": len(orders), "subscriptions": len(subs)}
+    return {k: len(v) for k, v in rows.items()}
+
+
+_PG_DDL = {
+    "customers": "CREATE TABLE IF NOT EXISTS customers (id INTEGER PRIMARY KEY, name VARCHAR, email VARCHAR, phone VARCHAR, region VARCHAR, channel VARCHAR, created_at DATE)",
+    "products": "CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY, name VARCHAR, category VARCHAR, price NUMERIC(10,2))",
+    "orders": "CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, customer_id INTEGER, product_id INTEGER, order_date DATE, amount NUMERIC(10,2), quantity INTEGER, region VARCHAR, channel VARCHAR, status VARCHAR)",
+    "subscriptions": "CREATE TABLE IF NOT EXISTS subscriptions (id INTEGER PRIMARY KEY, customer_id INTEGER, plan VARCHAR, status VARCHAR, started_at DATE, ended_at DATE, monthly_price NUMERIC(10,2))",
+}
+
+_PG_COLS = {
+    "customers": "(id, name, email, phone, region, channel, created_at)",
+    "products": "(id, name, category, price)",
+    "orders": "(id, customer_id, product_id, order_date, amount, quantity, region, channel, status)",
+    "subscriptions": "(id, customer_id, plan, status, started_at, ended_at, monthly_price)",
+}
+
+
+def seed_postgres(database_url: str) -> dict:
+    """Seed the same deterministic demo dataset into Postgres (FR-15).
+
+    This is a seed script, not the query path: it runs DDL/DML against the
+    URL in DATABASE_URL. The query executor never writes. Safe to re-run:
+    tables are created if missing and refilled from scratch.
+    """
+    from sqlalchemy import create_engine, text
+
+    rows = generate_rows()
+    engine = create_engine(database_url, pool_pre_ping=True)
+    with engine.begin() as conn:
+        for table, ddl in _PG_DDL.items():
+            conn.execute(text(ddl))
+        for table in ("orders", "subscriptions", "customers", "products"):
+            conn.execute(text(f"TRUNCATE TABLE {table}"))
+        for table, data in rows.items():
+            cols = _PG_COLS[table]
+            n = len(data[0])
+            placeholders = ", ".join(f":v{i}" for i in range(n))
+            stmt = text(f"INSERT INTO {table} {cols} VALUES ({placeholders})")
+            conn.execute(stmt, [{f"v{i}": v for i, v in enumerate(row)} for row in data])
+    return {k: len(v) for k, v in rows.items()}
 
 
 if __name__ == "__main__":
     import sys
-    p = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "data" / "demo.duckdb"
-    print(seed(p))
+    if len(sys.argv) > 1 and sys.argv[1] == "--postgres":
+        import os
+        url = os.environ.get("DATABASE_URL", "")
+        if not url:
+            raise SystemExit("DATABASE_URL is not set.")
+        print(seed_postgres(url))
+    else:
+        p = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "data" / "demo.duckdb"
+        print(seed(p))

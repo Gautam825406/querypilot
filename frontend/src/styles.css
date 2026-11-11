@@ -515,3 +515,24 @@ details[open ] summary::before { transform: rotate(90deg); }
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
   html { scroll-behavior: auto; }
 }
+
+/* ---------- auth (JWT login card) ---------- */
+.auth-area { display: flex; align-items: center; gap: 8px; }
+.user-chip {
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 13px; color: var(--ink-soft);
+  border: 1px solid var(--border); border-radius: 999px; padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.auth-card { max-width: 520px; margin: 0 auto; }
+.auth-card form { display: flex; flex-direction: column; gap: 10px; }
+.auth-card input {
+  padding: 11px 13px; border-radius: 12px; border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.05); color: var(--ink); font-size: 14px; outline: none;
+}
+.auth-card input:focus { border-color: rgba(139, 92, 246, 0.6); box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.18); }
+.auth-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.auth-row + .auth-row { margin-top: 8px; }
+@media (max-width: 640px) {
+  .user-chip { max-width: 140px; }
+}

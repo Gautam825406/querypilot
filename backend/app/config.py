@@ -25,6 +25,19 @@ class Settings:
     groq_api_key: str = os.environ.get("GROQ_API_KEY", "")
     gemini_api_key: str = os.environ.get("GEMINI_API_KEY", "")
     openai_api_key: str = os.environ.get("OPENAI_API_KEY", "")
+    # --- Full-PRD settings (all optional; unset = v1 behaviour) ---
+    # Postgres target (FR-15). When set to a postgres:// URL, the executor
+    # queries Postgres instead of the DuckDB demo file.
+    database_url: str = os.environ.get("DATABASE_URL", "")
+    # Redis cache + Celery broker (FR-10/FR-11). Unset = in-memory cache,
+    # scheduled insights stored-only, Celery worker disabled.
+    redis_url: str = os.environ.get("REDIS_URL", "")
+    # JWT auth (FR-18). Change in production; the default is dev-only.
+    jwt_secret: str = os.environ.get("QP_JWT_SECRET", "dev-only-change-me")
+    jwt_expiry_hours: int = int(os.environ.get("QP_JWT_EXPIRY_HOURS", "24"))
+    # Scheduled-insight alerts (FR-11): generic webhook and/or Slack webhook.
+    insight_webhook_url: str = os.environ.get("INSIGHT_WEBHOOK_URL", "")
+    slack_webhook_url: str = os.environ.get("SLACK_WEBHOOK_URL", "")
 
     @property
     def llm_mode(self) -> str:
@@ -35,6 +48,23 @@ class Settings:
         if self.openai_api_key:
             return "openai"
         return "deterministic-fallback"
+
+    @property
+    def dialect(self) -> str:
+        """SQL dialect for validation and execution: 'postgres' or 'duckdb'."""
+        url = (self.database_url or "").lower()
+        if url.startswith("postgres://") or url.startswith("postgresql://"):
+            return "postgres"
+        return "duckdb"
+
+    @property
+    def cache_backend(self) -> str:
+        return "redis" if self.redis_url else "memory"
+
+    @property
+    def scheduler_enabled(self) -> bool:
+        """Celery scheduling needs a Redis broker."""
+        return bool(self.redis_url)
 
 
 settings = Settings()

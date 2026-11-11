@@ -1,12 +1,82 @@
+# QueryPilot full stack: API + Postgres + Redis + Celery worker/beat + frontend.
+#
+# NOT smoke-tested: Docker is not installed in the environment this file was
+# written in, so this compose file was validated by YAML parse + manual review
+# only (see README "Honest limits"). Run `docker compose config` before
+# relying on it, and `docker compose up --build` to smoke-test it.
+#
+# The API works with zero optional services: leave DATABASE_URL unset and the
+# backend uses the DuckDB demo file; leave REDIS_URL unset and it uses the
+# in-memory cache with insights stored-only (no Celery runs).
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=querypilot
+      - POSTGRES_USER=qp
+      - POSTGRES_PASSWORD=qp-dev-only
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qp -d querypilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     environment:
+      - DATABASE_URL=postgresql://qp:qp-dev-only@postgres:5432/querypilot
+      - REDIS_URL=redis://redis:6379/0
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - INSIGHT_WEBHOOK_URL=${INSIGHT_WEBHOOK_URL:-}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - QP_JWT_SECRET=${QP_JWT_SECRET:-dev-only-change-me}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    command: celery -A app.worker worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://qp:qp-dev-only@postgres:5432/querypilot
+      - REDIS_URL=redis://redis:6379/0
+      - INSIGHT_WEBHOOK_URL=${INSIGHT_WEBHOOK_URL:-}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build: ./backend
+    command: celery -A app.worker beat --loglevel=info
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ./frontend
@@ -17,3 +87,6 @@ services:
       - VITE_API_URL=http://localhost:8000
     depends_on:
       - backend
+
+volumes:
+  pgdata:

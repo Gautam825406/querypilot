@@ -24,8 +24,14 @@ def _strip_strings(sql: str) -> str:
     return re.sub(r"'[^']*'", "''", sql)
 
 
-def validate_sql(sql: str) -> dict:
-    """Validate one SQL statement. Returns {ok, sql (with LIMIT), rule} or raises ValidationError."""
+def validate_sql(sql: str, dialect: str | None = None) -> dict:
+    """Validate one SQL statement. Returns {ok, sql (with LIMIT), rule} or raises ValidationError.
+
+    `dialect` defaults to the configured dialect (settings.dialect): 'duckdb'
+    for the demo file, 'postgres' when DATABASE_URL points at Postgres. The
+    parser and the emitted SQL both follow that dialect.
+    """
+    dialect = dialect or settings.dialect
     raw = sql.strip()
     if not raw:
         raise ValidationError("empty", "Empty SQL is not allowed.")
@@ -41,7 +47,7 @@ def validate_sql(sql: str) -> dict:
     if hit:
         raise ValidationError("read_only", f"Only SELECT is allowed; blocked keyword found: {sorted(hit)[0].upper()}.")
     try:
-        parsed = sqlglot.parse(raw, read="duckdb")
+        parsed = sqlglot.parse(raw, read=dialect)
     except Exception as e:
         raise ValidationError("parse", f"SQL could not be parsed: {e}")
     if len(parsed) != 1 or parsed[0] is None:
@@ -98,6 +104,6 @@ def validate_sql(sql: str) -> dict:
     limit = settings.row_limit
     if tree.args.get("limit") is None:
         tree = tree.limit(limit)
-    final_sql = tree.sql(dialect="duckdb")
+    final_sql = tree.sql(dialect=dialect)
     return {"ok": True, "sql": final_sql, "rule": "passed", "limit": limit,
-            "timeout_seconds": settings.timeout_seconds}
+            "timeout_seconds": settings.timeout_seconds, "dialect": dialect}

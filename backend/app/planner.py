@@ -17,13 +17,14 @@ from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from .cache import cache_get, cache_key, cache_put
 from .charts import select_chart
 from .config import settings
 from .explainer import explain, llm_explain
 from .executor import execute_sql
 from .seed import seed
 from .semantic import SCHEMA, layer
-from .store import cache_get, cache_key, cache_put, save_run
+from .store import save_run
 from .validator import ValidationError, validate_sql
 
 MONTHS = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
@@ -65,6 +66,7 @@ class QPState(TypedDict, total=False):
     refusal: str
     lineage: dict
     cache_hit: bool
+    use_cache: bool
 
 
 def _month_period(name: str):
@@ -189,7 +191,7 @@ def parse_question(q: str, prior: dict | None = None) -> dict:
         out["dimension"] = "month"
     elif "by region" in low:
         out["dimension"] = "region"
-    elif "by categor" in low:
+    elif "categor" in low:
         out["dimension"] = "product_category"
     elif "by channel" in low:
         out["dimension"] = "channel"
@@ -233,7 +235,7 @@ def build_sql(p: dict) -> str:
         # Single-period churn.
         cond = ""
         if period:
-            cond = (f" WHERE subscriptions.ended_at >= DATE '{period['start']}' "
+            cond = (f" AND subscriptions.ended_at >= DATE '{period['start']}' "
                     f"AND subscriptions.ended_at <= DATE '{period['end']}'")
         return ("SELECT ROUND(100.0 * COUNT(*) / NULLIF((SELECT COUNT(*) FROM subscriptions "
                 "WHERE subscriptions.started_at <= DATE '2025-12-31'), 0), 2) AS monthly_churn_rate "
@@ -333,14 +335,17 @@ def node_validate(state: QPState) -> QPState:
 
 
 def node_execute(state: QPState) -> QPState:
-    key = cache_key(state["sql"], layer.version)
-    hit = cache_get(key)
-    if hit:
-        return {"columns": hit["columns"], "rows": hit["rows"], "duration_ms": 0,
-                "cache_hit": True, "status": "executed", "error": ""}
+    if state.get("use_cache", True):
+        key = cache_key(state["sql"], layer.version, scope=state.get("workspace", "demo"))
+        hit = cache_get(key)
+        if hit:
+            return {"columns": hit["columns"], "rows": hit["rows"], "duration_ms": 0,
+                    "cache_hit": True, "status": "executed", "error": ""}
     try:
         cols, rows, dur = execute_sql(state["sql"])
-        cache_put(key, {"columns": cols, "rows": rows})
+        if state.get("use_cache", True):
+            cache_put(cache_key(state["sql"], layer.version, scope=state.get("workspace", "demo")),
+                      {"columns": cols, "rows": rows})
         return {"columns": cols, "rows": rows, "duration_ms": dur, "status": "executed", "error": ""}
     except Exception as e:
         attempts = list(state.get("attempts", [])) + [{"attempt": len(state.get("attempts", [])) + 1,
@@ -432,20 +437,45 @@ def _norm_rows(rows):
 
 
 def _ensure_demo_db():
+    """Make sure the target database holds the demo dataset.
+
+    DuckDB: create the file on first boot. Postgres (DATABASE_URL set):
+    seed the empty database once — if the tables are missing, seed them so a
+    fresh managed Postgres (e.g. Neon) just works; if seeding fails, log and
+    keep booting (asks will fail loudly with the real DB error instead).
+    """
+    import logging
+    if settings.dialect == "postgres":
+        try:
+            from sqlalchemy import create_engine, text
+            engine = create_engine(settings.database_url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                exists = conn.execute(
+                    text("SELECT to_regclass('public.orders')")).scalar()
+            if not exists:
+                from .seed import seed_postgres
+                seed_postgres(settings.database_url)
+                logging.getLogger("querypilot").info(
+                    "Seeded demo dataset into Postgres (DATABASE_URL).")
+        except Exception as e:
+            logging.getLogger("querypilot").warning(
+                "Postgres demo data not ensured (%s); asks may fail until the "
+                "database is seeded with: python -m app.seed --postgres", e)
+        return
     db = Path(settings.database_path)
     if not db.exists():
         seed(db)
 
 
 def run_ask(question: str, workspace: str = "demo", prior: dict | None = None,
-            force_sql: str | None = None) -> dict:
+            force_sql: str | None = None, use_cache: bool = True) -> dict:
     _ensure_demo_db()
     global _GRAPH
     if _GRAPH is None:
         _GRAPH = build_graph()
     started = time.time()
     init: QPState = {"question": question, "workspace": workspace, "prior": prior or {},
-                     "force_sql": force_sql or ""}
+                     "force_sql": force_sql or "", "use_cache": use_cache}
     result = _GRAPH.invoke(init)
     # Normalise Decimal/date values so rows and the chart spec are JSON-safe.
     result["rows"] = _norm_rows(result.get("rows", []))

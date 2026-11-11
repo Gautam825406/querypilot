@@ -1,0 +1,15 @@
+{
+  "dataset": "Spider (xlangai/spider, validation split)",
+  "selection": "first 50 examples in file order",
+  "limit": 50,
+  "status": "not run",
+  "reason": "Spider sqlite databases are not directly downloadable: the taoyds/spider and taoyds/test-suite-sql-eval GitHub repos do not host the database files (they are distributed via Google Drive), so execution accuracy cannot be measured without them.",
+  "examples_fetched": 50,
+  "databases_available": 0,
+  "execution_accuracy": null,
+  "per_case": [],
+  "databases_needed": [
+    "concert_singer",
+    "pets_1"
+  ]
+}

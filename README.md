@@ -15,14 +15,15 @@ self-corrected from real database errors when it fails. Never guessed, never hid
 flowchart LR
     U[User question] --> API[FastAPI]
     API --> G[LangGraph planner<br/>classify → resolve → plan → draft]
-    G --> V[sqlglot validator<br/>SELECT-only · schema · PII · LIMIT]
-    V -->|valid| C[Cache<br/>hash SQL + layer version]
-    C --> E[DuckDB executor<br/>read-only · row cap · timeout]
+    G --> V[sqlglot validator<br/>SELECT-only · schema · PII · LIMIT<br/>dialect: duckdb / postgres]
+    V -->|valid| C[Cache<br/>hash SQL + layer version + scope<br/>Redis when REDIS_URL set, memory otherwise]
+    C --> E[Executor<br/>DuckDB read-only, or Postgres<br/>READ ONLY txn + statement timeout]
     E -->|DB error| X[Corrector · max 3 attempts<br/>re-validates every retry]
     X --> V
     E --> R[Explainer + Vega-Lite chart]
     R --> A[Audit log · SQLite]
     V -->|blocked| B[Blocked: rule named,<br/>never executed]
+    W[Celery worker + beat<br/>scheduled insights, when Redis set] --> E
 ```
 
 Data flow: question → FastAPI → intent classification → semantic-layer lookup →
@@ -33,20 +34,49 @@ self-correction loop on error (max 3) → explanation + chart → audit record.
 The component that writes SQL never holds database credentials; the component
 that executes SQL never accepts unvalidated text.
 
-## Measured results (run 2026-11-11, golden set of 20 cases)
+## Measured results (run 2026-11-11, golden set of 50 cases)
 
 All numbers below come from `python backend/evals/run_eval.py` — a real run of
 the real ask path. Nothing here is a PRD target.
 
 | Metric | Measured |
 | --- | --- |
-| Execution accuracy (20 golden cases) | **100% (20/20)** |
-| Execution accuracy, answered cases only (14) | 100% (14/14) |
-| Valid-SQL rate (cases where SQL was drafted) | 100% (14/14) |
+| Execution accuracy (50 golden cases) | **100% (50/50)** |
+| Execution accuracy, answered cases only (36) | 100% (36/36) |
+| Valid-SQL rate (cases where SQL was drafted) | 100% (36/36) |
 | Self-correction success (broken draft fixed from DB error) | yes, in 1 attempt |
 | Safety suite (destructive / stacked / comment-hidden / PII / out-of-schema) | **11/11 blocked (100%)** |
-| Ambiguous / unmodelled / unsafe handling | 6/6 correct (clarifying / refused / blocked) |
+| Ambiguous / unmodelled / unsafe handling | 14/14 correct (clarifying / refused / blocked) |
 | LLM mode in this run | `deterministic-fallback` (no API key set) — cost $0.00, 0 tokens per query |
+| Backend tests | **37 passing** (`python -m pytest backend/tests -q`) |
+
+### Ablation (same 50 cases, one layer added at a time)
+
+| Config | Execution accuracy | Valid-SQL rate | Avg latency |
+| --- | --- | --- | --- |
+| (a) Direct-LLM baseline | **not run — no LLM key** (no number is claimed without running it) | — | — |
+| (b) + Semantic layer only | 100% (50/50) | 100% | 9.9 ms |
+| (c) + Validator & correction | 100% (50/50) | 100% | 97.7 ms |
+| (d) Full system + cache/examples | 100% (50/50) | 100% | 99.7 ms cold; cache hit rate 72% on the warm second pass (36/36 answered cases hit) |
+
+Why (b) already scores 100%: the deterministic planner drafts from the same
+semantic layer the checks are written against, so on the modelled golden set
+the validator and cache add safety and latency, not accuracy. The difference
+shows up off the golden set — an invalid draft (e.g. a bad date literal) is
+fixed by the correction loop instead of failing, and unsafe SQL is blocked
+before execution. The warm cache barely helps latency here because local
+DuckDB execution is already ~10 ms; the cache pays off against a remote
+Postgres target.
+
+### Spider subset — not run
+
+`python backend/evals/spider.py --limit 50` was attempted and produced an
+honest "not run" report (`backend/evals/spider_report.json`): the first 50
+validation examples were fetched from HuggingFace, but the Spider sqlite
+databases are not directly downloadable — the taoyds/spider and
+taoyds/test-suite-sql-eval GitHub repos do not host them (they are distributed
+via Google Drive) — so execution accuracy cannot be measured without them.
+No Spider score is claimed.
 
 PRD targets (e.g. "improve over baseline") are **targets, not results**, and are
 not claimed anywhere in this README.
@@ -74,6 +104,12 @@ docker compose up --build
 # API: http://localhost:8000  ·  Frontend: http://localhost:5173
 ```
 
+> Docker Compose was **not smoke-tested** while building this: Docker is not
+> installed in the build environment, so `docker-compose.yml` was validated by
+> YAML parse + manual review only (services: postgres, redis, backend, worker,
+> beat, frontend). Run `docker compose config` and then `up --build` to
+> smoke-test it before relying on it.
+
 Or without Docker:
 
 ```bash
@@ -81,6 +117,104 @@ cd backend && python -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 cd ../frontend && npm install && npm run dev   # VITE_API_URL defaults to http://localhost:8000
 ```
+
+The backend boots with **zero optional env vars** (DuckDB demo + in-memory
+cache + deterministic-fallback planner), so the live Render deploy — which
+sets none of them — keeps working unchanged.
+
+## PostgreSQL target
+
+Set `DATABASE_URL` to a `postgres://` / `postgresql://` URL and the backend
+switches dialect (validator uses the `postgres` sqlglot dialect; execution
+runs inside a `READ ONLY` transaction with a statement timeout, so the
+executor can never write even if validation had a bug). Unset it and DuckDB
+remains the default.
+
+```bash
+# Seed the same deterministic demo dataset into Postgres (200 customers,
+# 20 products, 612 orders, 120 subscriptions — identical rows to DuckDB):
+DATABASE_URL=postgresql://qp:qp-dev-only@localhost:5432/querypilot \
+  python -m app.seed --postgres
+# or, without the flag, seed DuckDB:
+python -m app.seed
+```
+
+On startup the backend also seeds Postgres automatically if the `orders`
+table is missing (a failure to reach Postgres is logged, never fatal — the
+service still boots). `/api/health` reports the active `dialect` and whether
+a database URL is configured.
+
+## Redis cache + Celery worker
+
+Set `REDIS_URL` (e.g. `redis://localhost:6379/0`) and the result cache moves
+to redis-py (key = `sha256(scope|sql|layer_version)`, TTL from `QP_CACHE_TTL`,
+invalidated on layer-version change); `/api/health` reports `cache_backend:
+redis` only when Redis actually answers a ping — otherwise it falls back to
+the in-memory cache and says so. Without `REDIS_URL`, everything works with
+the in-memory cache.
+
+Scheduled insights run on cadence only when Redis is set:
+
+```bash
+# Worker (executes due insights + evals) and beat (scans for due insights
+# every 60s) — same backend image:
+celery -A app.worker worker --loglevel=info
+celery -A app.worker beat --loglevel=info
+# or: docker compose up worker beat
+```
+
+Each due insight is re-validated against the current schema/layer (on failure
+it is paused as `paused_on_schema_change` and the owner is alerted), executed
+read-only, stored, and checked against its threshold. A notification fires
+**only on breach** (or on pause), via `INSIGHT_WEBHOOK_URL` and/or
+`SLACK_WEBHOOK_URL`; every delivery attempt is logged in the insight's run
+history. `POST /api/insights/{id}/run-now` runs one insight immediately and
+works without Redis/Celery. Without `REDIS_URL`, insights are stored-only and
+the API/health endpoint says so honestly — Celery is never pretended to run.
+
+## Auth & roles (JWT)
+
+```bash
+POST /api/auth/register   # {email, name, password} -> JWT (role always business_user unless an admin creates it)
+POST /api/auth/login      # {email, password} -> JWT
+GET  /api/auth/me         # current user (needs a token)
+```
+
+Passwords are hashed with stdlib `hashlib.pbkdf2_hmac` (100k iterations);
+tokens are PyJWT HS256, 24h by default (`QP_JWT_EXPIRY_HOURS`). Roles:
+`admin` (admin limits, evals/run, any insight), `analyst`, `business_user`.
+Users and workspaces live in the audit SQLite DB (tables migrated on startup);
+an authenticated user can only query their own workspace.
+
+`/api/ask` works **without a token** (anonymous = demo workspace), so the live
+demo never breaks. Mutating/admin endpoints require a token with the right
+role: insight create/patch/delete, `GET/PATCH /api/admin/limits`,
+`POST /api/evals/run`. The frontend has a small login card in the navbar
+(Sign in → form with **Use demo account** / **Use demo admin** buttons); it
+stores the JWT in `localStorage` and sends `Authorization: Bearer` on calls,
+and the app still works fully when logged out.
+
+Demo logins (seeded on first boot, demo workspace):
+
+| Login | Password | Role |
+| --- | --- | --- |
+| demo@querypilot.local | demo123 | business_user |
+| admin@querypilot.local | admin123 | admin |
+
+## Environment variables
+
+See `.env.example` (names only, no secrets). Every variable is optional.
+
+| Variable | Purpose | Default when unset |
+| --- | --- | --- |
+| `GROQ_API_KEY` / `GEMINI_API_KEY` / `OPENAI_API_KEY` | LLM keys (explanation polish + direct-LLM eval baseline) | deterministic-fallback, $0 |
+| `DATABASE_URL` | Postgres target (`postgres://…`) | DuckDB demo file |
+| `REDIS_URL` | Redis cache + Celery broker | in-memory cache, insights stored-only |
+| `INSIGHT_WEBHOOK_URL` / `SLACK_WEBHOOK_URL` | Breach/pause alerts | no notifications |
+| `QP_JWT_SECRET` | JWT signing secret | `dev-only-change-me` (change in production) |
+| `QP_JWT_EXPIRY_HOURS` | Token lifetime | 24 |
+| `QP_ROW_LIMIT` / `QP_TIMEOUT_SECONDS` / `QP_CACHE_TTL` | Limits | 100 / 10s / 300s |
+| `VITE_API_URL` | Frontend → backend URL | http://localhost:8000 |
 
 ## Run the evaluation (one command)
 
@@ -105,11 +239,14 @@ python backend/evals/run_eval.py
   rejects INSERT/UPDATE/DELETE/DDL, stacked statements and comments hiding a
   second statement; every table/column must exist in the schema and be reachable
   via the semantic layer; PII blocked; LIMIT 100 injected; timeout enforced.
-  Blocked queries never reach the executor.
-- **Executor**: SQLAlchemy + DuckDB, read-only connection, row cap + timeout
-  enforced in code. Self-correction: max 3 attempts, fed the exact DB error +
-  failed SQL + schema excerpt, re-validated before re-execution, stops on a
-  repeated identical error. Every attempt is logged in the run.
+  Blocked queries never reach the executor. Dialect-aware: `duckdb` by
+  default, `postgres` when `DATABASE_URL` is set.
+- **Executor**: SQLAlchemy dialect abstraction. DuckDB: read-only connection.
+  Postgres: the same validated SQL runs inside a `READ ONLY` transaction with
+  a statement timeout. Row cap + timeout enforced in code. Self-correction:
+  max 3 attempts, fed the exact DB error + failed SQL + schema excerpt,
+  re-validated before re-execution, stops on a repeated identical error. Every
+  attempt is logged in the run.
 - **Explainer**: written from the executed result rows (definition, period,
   filters stated). Rates/averages are never summed across groups. Chart
   selection from result shape: time series → line, category comparison → bar,
@@ -117,33 +254,55 @@ python backend/evals/run_eval.py
 - **Audit & cache**: every run (question, plan, SQL, validation, attempts,
   rows, duration, tokens/cost — $0 in deterministic mode) is stored in SQLite
   (`backend/querypilot.db`, gitignored) and exposed via `/api/runs` and
-  `/api/history`. In-memory cache keyed by `hash(sql + layer_version)`, TTL 300s.
+  `/api/history`. Result cache keyed by `hash(scope|sql|layer_version)`, TTL
+  300s — in-memory by default, Redis when `REDIS_URL` is set (with automatic
+  fallback to memory if Redis is unreachable). Scheduled insights are executed
+  by the Celery worker (see above); their runs, thresholds and notification
+  deliveries are stored in the audit DB.
+- **Auth**: JWT (PyJWT) with roles `admin` / `analyst` / `business_user`;
+  passwords hashed with stdlib pbkdf2_hmac. `/api/ask` stays open for the demo
+  workspace; mutating and admin endpoints require a token with the right role.
 
 ## API
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/health` (also `/` and `/health`) | Status + honest `llm_mode` |
-| `POST /api/ask` | Ask a question |
+| `GET /api/health` (also `/` and `/health`) | Status + honest `llm_mode`, `dialect`, `cache_backend`, `scheduler`, `auth` |
+| `POST /api/auth/register` · `POST /api/auth/login` · `GET /api/auth/me` | JWT auth (register, login, current user) |
+| `POST /api/ask` | Ask a question (no token needed for the demo workspace) |
 | `POST /api/ask/{run_id}/follow-up` | Follow-up reusing prior run context |
 | `GET /api/runs/{id}` · `GET /api/history` | Run detail / past runs |
 | `GET /api/semantic/metrics` · `GET /api/semantic/models` | Semantic explorer |
-| `GET/POST /api/insights` · `PATCH/DELETE /api/insights/{id}` | Scheduled insights |
+| `GET/POST /api/insights` · `PATCH/DELETE /api/insights/{id}` | Scheduled insights (auth required) |
+| `POST /api/insights/{id}/run-now` · `GET /api/insights/{id}/runs` | Run an insight now / its run history |
 | `POST /api/feedback` | Thumbs up/down + analyst correction |
-| `GET/PATCH /api/admin/limits` | Row limits, timeouts, cost caps |
-| `POST /api/evals/run` | Run the golden-set evaluation |
+| `GET/PATCH /api/admin/limits` | Row limits, timeouts, cost caps (admin only) |
+| `POST /api/evals/run` | Run the golden-set evaluation + ablation (admin only) |
 
 ## Honest limits / non-goals
 
 - Read-only, always. No writes, no unmodelled tables, no hidden SQL.
 - Deterministic planner covers the 5 modelled metrics and their dimensions;
   anything else is refused or clarified, not improvised.
-- No PostgreSQL target in v1 (DuckDB demo only); the SQLAlchemy dialect
-  abstraction is the documented extension point.
-- No Redis/Celery in v1: caching is in-memory, scheduled insights are stored
-  but not executed on a cron (their SQL is re-validated on creation).
-- No auth in v1 (single demo workspace); workspace scoping is enforced in the
-  planner/validator, not only in the UI.
-- A direct-LLM baseline and a BIRD/Spider subset run were not done in v1 —
-  the golden set above is the measured benchmark. Do not quote a baseline
-  improvement that was not run.
+- **Postgres target exists** (`DATABASE_URL`), but no live Postgres was
+  available in the build environment — the executor's read-only transaction
+  is covered by a mocked-engine test, not a live Postgres run. Seed it with
+  `python -m app.seed --postgres` and verify before relying on it.
+- **Redis/Celery exist** (`REDIS_URL`), but no live Redis was available in
+  the build environment — cache fallback to memory is tested (unreachable
+  Redis degrades cleanly), the worker's scan/execute/notify logic is tested
+  through the synchronous `run-now` path, but the Celery beat loop itself
+  was not run end-to-end here.
+- **Docker Compose was not smoke-tested** (no Docker in the build
+  environment) — YAML parse + review only.
+- **Direct-LLM baseline not run** — no LLM key is set, so the ablation
+  reports "not run — no LLM key" and no baseline number is claimed.
+- **Spider subset not run** — the Spider sqlite databases are not directly
+  downloadable in this environment (see `backend/evals/spider_report.json`);
+  no Spider score is claimed.
+- Auth is JWT with a dev-default secret (`dev-only-change-me`): set
+  `QP_JWT_SECRET` to a long random value in production. The demo logins are
+  public demo credentials, not real accounts.
+- Workspace scoping is enforced in the planner/validator for the demo
+  workspace; multi-workspace data isolation beyond that is not a goal of
+  this build.

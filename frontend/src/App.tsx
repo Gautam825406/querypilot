@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { api } from './api'
+import { api, getStoredUser } from './api'
 import { Chart } from './charts'
 
 const API_BASE = (import.meta as any).env?.VITE_API_URL || 'http://localhost:8000'
@@ -84,8 +84,18 @@ export default function App() {
   const [metrics, setMetrics] = useState<any[]>([])
   const [models, setModels] = useState<any>(null)
   const [insights, setInsights] = useState<any[]>([])
+  const [insightRuns, setInsightRuns] = useState<Record<string, any>>({})
   const [evalResult, setEvalResult] = useState<any>(null)
   const [followUp, setFollowUp] = useState('')
+  // Auth: the app works fully logged out (anonymous = demo workspace).
+  // Signing in unlocks saving insights, running evals and admin limits.
+  const [user, setUser] = useState<any>(() => getStoredUser())
+  const [showLogin, setShowLogin] = useState(false)
+  const [loginMode, setLoginMode] = useState<'signin' | 'register'>('signin')
+  const [loginEmail, setLoginEmail] = useState('')
+  const [loginName, setLoginName] = useState('')
+  const [loginPassword, setLoginPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth({ status: 'unreachable' }))
@@ -128,14 +138,61 @@ export default function App() {
 
   async function runEval() {
     setLoading(true)
-    try { setEvalResult(await api.runEval()) } catch (e: any) { setError(e.message) } finally { setLoading(false) }
+    try { setEvalResult(await api.runEval()) } catch (e: any) {
+      setError(e.message)
+      if ((e.message || '').includes('sign in')) setShowLogin(true)
+    } finally { setLoading(false) }
+  }
+
+  async function submitAuth(e?: React.FormEvent) {
+    e?.preventDefault()
+    setLoginError('')
+    try {
+      const d = loginMode === 'register'
+        ? await api.register(loginEmail.trim(), loginName.trim() || loginEmail.split('@')[0], loginPassword)
+        : await api.login(loginEmail.trim(), loginPassword)
+      setUser({ email: d.email, name: d.name, role: d.role })
+      setShowLogin(false); setLoginPassword('')
+    } catch (err: any) {
+      setLoginError(err.message || 'Sign-in failed. Check the email and password.')
+    }
+  }
+
+  function fillDemo(admin: boolean) {
+    setLoginMode('signin')
+    setLoginEmail(admin ? 'admin@querypilot.local' : 'demo@querypilot.local')
+    setLoginPassword(admin ? 'admin123' : 'demo123')
+    setLoginError('')
+  }
+
+  function signOut() {
+    api.logout()
+    setUser(null)
+    setShowLogin(false)
   }
 
   async function saveInsight() {
     if (!run) return
-    await api.createInsight({ run_id: run.id, question: run.question, sql: run.sql, cadence: 'daily', threshold: null })
+    try {
+      await api.createInsight({ run_id: run.id, question: run.question, sql: run.sql, cadence: 'daily', threshold: null })
+    } catch (e: any) {
+      setError(e.message || 'Could not save the insight.')
+      if ((e.message || '').includes('sign in')) setShowLogin(true)
+      return
+    }
     const d = await api.insights(); setInsights(d.insights || [])
     setTab('insights')
+  }
+
+  async function runInsightNow(id: string) {
+    try {
+      const r = await api.runInsightNow(id)
+      setInsightRuns((prev) => ({ ...prev, [id]: r }))
+      const d = await api.insights(); setInsights(d.insights || [])
+    } catch (e: any) {
+      setError(e.message || 'Could not run the insight.')
+      if ((e.message || '').includes('sign in')) setShowLogin(true)
+    }
   }
 
   const healthOk = health?.status === 'ok'
@@ -170,6 +227,14 @@ export default function App() {
               {health?.llm_mode && <span className="hide-sm">· {health.llm_mode}</span>}
             </span>
             <span className="badge-sample">Sample data</span>
+            {user ? (
+              <span className="auth-area">
+                <span className="user-chip" title={`${user.email} · ${user.role}`}>{user.email}</span>
+                <button className="btn btn-sm" onClick={signOut}>Sign out</button>
+              </span>
+            ) : (
+              <button className="btn btn-sm btn-primary" onClick={() => { setShowLogin((v) => !v); setLoginError('') }}>Sign in</button>
+            )}
           </div>
           <button className="menu-toggle" aria-label="Toggle navigation menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}>
             {menuOpen ? '✕' : '☰'}
@@ -178,6 +243,36 @@ export default function App() {
       </header>
 
       <main>
+      {showLogin && !user && (
+        <section className="page" style={{ paddingTop: 8 }}>
+          <div className="card auth-card">
+            <h3 style={{ marginTop: 0 }}>{loginMode === 'register' ? 'Create an account' : 'Sign in'}</h3>
+            <p className="muted" style={{ marginTop: 0 }}>
+              Asking questions works without an account. Signing in unlocks saving insights, running evals and admin limits.
+            </p>
+            <form onSubmit={submitAuth}>
+              {loginMode === 'register' && (
+                <input value={loginName} onChange={(e) => setLoginName(e.target.value)} placeholder="Name" autoComplete="name" />
+              )}
+              <input value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="Email" type="email" required autoComplete="email" />
+              <input value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} placeholder="Password" type="password" required autoComplete={loginMode === 'register' ? 'new-password' : 'current-password'} />
+              {loginError && <p style={{ color: '#fb7185', margin: '4px 0' }}>{loginError}</p>}
+              <div className="auth-row">
+                <button className="btn btn-primary" type="submit">{loginMode === 'register' ? 'Create account' : 'Sign in'}</button>
+                <button className="btn" type="button" onClick={() => setShowLogin(false)}>Cancel</button>
+              </div>
+            </form>
+            <div className="auth-row">
+              <button className="btn btn-sm" type="button" onClick={() => fillDemo(false)}>Use demo account</button>
+              <button className="btn btn-sm" type="button" onClick={() => fillDemo(true)}>Use demo admin</button>
+              <button className="btn btn-sm" type="button" onClick={() => { setLoginMode(loginMode === 'register' ? 'signin' : 'register'); setLoginError('') }}>
+                {loginMode === 'register' ? 'Have an account? Sign in' : 'New here? Create an account'}
+              </button>
+            </div>
+            <p className="muted" style={{ marginBottom: 0 }}>Demo: demo@querypilot.local / demo123 · Admin: admin@querypilot.local / admin123</p>
+          </div>
+        </section>
+      )}
       {tab === 'ask' && (
         <section className="ask-page">
           <div className="hero-band">
@@ -187,9 +282,9 @@ export default function App() {
               <p>Plain English in, validated SQL out — with the definition, the chart and the lineage, every time. No guessing, no hidden numbers.</p>
             </div>
             <div className="trust-stats" aria-label="Measured results">
-              <div className="trust-stat"><b>100%</b><span>Execution accuracy · 20 golden cases</span></div>
+              <div className="trust-stat"><b>100%</b><span>Execution accuracy · 50 golden cases</span></div>
               <div className="trust-stat"><b>11/11</b><span>Safety checks blocked</span></div>
-              <div className="trust-stat"><b>17</b><span>Backend tests passing</span></div>
+              <div className="trust-stat"><b>37</b><span>Backend tests passing</span></div>
             </div>
           </div>
 
@@ -359,8 +454,16 @@ export default function App() {
                   <b>{ins.question}</b>
                   <span className={`status-pill ${ins.status === 'active' ? 'active' : 'paused'}`}>{ins.status}</span>
                 </div>
-                <p className="muted" style={{ margin: 0 }}>Cadence: {ins.cadence} · Threshold: {ins.threshold ?? 'none'}</p>
+                <p className="muted" style={{ margin: 0 }}>Cadence: {ins.cadence} · Threshold: {ins.threshold ?? 'none'}{ins.last_value != null ? ` · Last value: ${ins.last_value}` : ''}</p>
+                {insightRuns[ins.id] && (
+                  <p className="muted" style={{ margin: '6px 0 0' }}>
+                    Last run: value {insightRuns[ins.id].value ?? '—'}
+                    {insightRuns[ins.id].breached ? ' · ⚠️ threshold breached — alert sent' : ' · within threshold'}
+                    {insightRuns[ins.id].status === 'paused_on_schema_change' ? ' · paused: saved SQL no longer validates' : ''}
+                  </p>
+                )}
                 <div className="insight-actions">
+                  <button className="btn btn-sm btn-primary" onClick={() => runInsightNow(ins.id)}>▶ Run now</button>
                   <button className="btn btn-sm" onClick={async () => { await api.patchInsight(ins.id, { status: ins.status === 'active' ? 'paused' : 'active' }); const d = await api.insights(); setInsights(d.insights || []) }}>
                     {ins.status === 'active' ? '⏸ Pause' : '▶ Resume'}
                   </button>
@@ -376,7 +479,7 @@ export default function App() {
         <section className="page">
           <div className="page-head">
             <h2>Eval &amp; safety</h2>
-            <p className="section-sub">Runs the real ask path on the 20-case golden set, plus the safety suite. Numbers come from a live run, never from the PRD targets.</p>
+            <p className="section-sub">Runs the real ask path on the 50-case golden set, plus the safety suite and the 4-way ablation. Numbers come from a live run, never from the PRD targets. Running the eval needs an admin account — use the demo admin login.</p>
           </div>
           <button className="btn btn-primary" disabled={loading} onClick={runEval}>{loading ? 'Running…' : '▶ Run evaluation'}</button>
           {evalResult && (
@@ -392,6 +495,45 @@ export default function App() {
                 <p className="muted" style={{ margin: 0 }}>
                   Correction success: {evalResult.correction_success ? 'yes' : 'no'} ({evalResult.correction_attempts_on_broken_draft} attempt(s) on the broken draft)
                 </p>
+              </div>
+            </div>
+          )}
+          {evalResult && evalResult.ablation && (
+            <div className="card">
+              <h3>Ablation — what each layer adds (same {evalResult.golden_cases} cases)</h3>
+              <div className="table-wrap">
+                <table>
+                  <thead><tr><th>Config</th><th>Accuracy</th><th>Valid SQL</th><th>Avg latency</th><th>Cache hit</th></tr></thead>
+                  <tbody>
+                    <tr>
+                      <td>Direct-LLM baseline</td>
+                      <td colSpan={4}>{evalResult.ablation.direct_llm_baseline.status === 'run'
+                        ? `${(evalResult.ablation.direct_llm_baseline.execution_accuracy * 100).toFixed(0)}%`
+                        : evalResult.ablation.direct_llm_baseline.status}</td>
+                    </tr>
+                    <tr>
+                      <td>+ Semantic layer</td>
+                      <td>{(evalResult.ablation.semantic_layer_only.execution_accuracy * 100).toFixed(0)}%</td>
+                      <td>{(evalResult.ablation.semantic_layer_only.valid_sql_rate * 100).toFixed(0)}%</td>
+                      <td>{evalResult.ablation.semantic_layer_only.avg_latency_ms} ms</td>
+                      <td>—</td>
+                    </tr>
+                    <tr>
+                      <td>+ Validator &amp; correction</td>
+                      <td>{(evalResult.ablation.validator_and_correction.execution_accuracy * 100).toFixed(0)}%</td>
+                      <td>{(evalResult.ablation.validator_and_correction.valid_sql_rate * 100).toFixed(0)}%</td>
+                      <td>{evalResult.ablation.validator_and_correction.avg_latency_ms} ms</td>
+                      <td>—</td>
+                    </tr>
+                    <tr>
+                      <td>Full system + cache</td>
+                      <td>{(evalResult.ablation.full_system_cached.execution_accuracy * 100).toFixed(0)}%</td>
+                      <td>{(evalResult.ablation.full_system_cached.valid_sql_rate * 100).toFixed(0)}%</td>
+                      <td>{evalResult.ablation.full_system_cached.avg_latency_ms} ms</td>
+                      <td>{(evalResult.ablation.full_system_cached.cache_hit_rate * 100).toFixed(0)}%</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
