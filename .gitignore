@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+# Databases (generated)
+*.db
+*.duckdb
+backend/data/
+# Node
+node_modules/
+frontend/dist/
+# Env / secrets
+.env
+.env.*
+!.env.example
+# Misc
+.DS_Store
+*.log
+.pytest_cache/
+*.tsbuildinfo

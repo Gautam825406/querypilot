@@ -1,0 +1,118 @@
+version: "1.0.0"
+description: E-commerce demo semantic layer for QueryPilot (sample data only).
+
+models:
+  - name: customers
+    description: Customers who placed orders or hold subscriptions.
+    columns:
+      - {name: id, type: INTEGER, description: Customer id}
+      - {name: name, type: VARCHAR, description: Customer name}
+      - {name: email, type: VARCHAR, description: Customer email, pii: true}
+      - {name: phone, type: VARCHAR, description: Customer phone, pii: true}
+      - {name: region, type: VARCHAR, description: "Customer region: North, South, East, West"}
+      - {name: channel, type: VARCHAR, description: "Acquisition channel: online, retail, partner"}
+      - {name: created_at, type: DATE, description: Customer creation date}
+  - name: orders
+    description: Completed and cancelled orders.
+    columns:
+      - {name: id, type: INTEGER, description: Order id}
+      - {name: customer_id, type: INTEGER, description: FK to customers.id}
+      - {name: product_id, type: INTEGER, description: FK to products.id}
+      - {name: order_date, type: DATE, description: Order date}
+      - {name: amount, type: DECIMAL, description: Order amount in USD}
+      - {name: quantity, type: INTEGER, description: Items in the order}
+      - {name: region, type: VARCHAR, description: "Order region: North, South, East, West"}
+      - {name: channel, type: VARCHAR, description: "Order channel: online, retail, partner"}
+      - {name: status, type: VARCHAR, description: "Order status: completed or cancelled"}
+  - name: products
+    description: Product catalogue.
+    columns:
+      - {name: id, type: INTEGER, description: Product id}
+      - {name: name, type: VARCHAR, description: Product name}
+      - {name: category, type: VARCHAR, description: "Product category: Electronics, Apparel, Home, Beauty, Sports"}
+      - {name: price, type: DECIMAL, description: List price in USD}
+  - name: subscriptions
+    description: Customer subscriptions.
+    columns:
+      - {name: id, type: INTEGER, description: Subscription id}
+      - {name: customer_id, type: INTEGER, description: FK to customers.id}
+      - {name: plan, type: VARCHAR, description: "Plan: Basic, Pro, Enterprise"}
+      - {name: status, type: VARCHAR, description: "Subscription status: active, churned, paused"}
+      - {name: started_at, type: DATE, description: Subscription start date}
+      - {name: ended_at, type: DATE, description: Subscription end date (null if active)}
+      - {name: monthly_price, type: DECIMAL, description: Monthly price in USD}
+
+dimensions:
+  - name: region
+    description: Geographic region (North, South, East, West).
+    model: orders
+    column: region
+  - name: product_category
+    description: Product category.
+    model: products
+    column: category
+  - name: month
+    description: Calendar month of the order or subscription event.
+    model: orders
+    column: order_date
+  - name: channel
+    description: Sales channel (online, retail, partner).
+    model: orders
+    column: channel
+
+metrics:
+  - name: total_revenue
+    description: Total revenue from completed orders in USD.
+    definition: SUM of orders.amount where orders.status = 'completed'.
+    aggregation: SUM(orders.amount)
+    model: orders
+    dimensions: [region, product_category, month, channel]
+    owner: finance
+    example_questions:
+      - What is total revenue?
+      - What is total revenue by month?
+      - What is total revenue by region?
+  - name: total_orders
+    description: Number of completed orders.
+    definition: COUNT of orders where orders.status = 'completed'.
+    aggregation: COUNT(*)
+    model: orders
+    dimensions: [region, product_category, month, channel]
+    owner: operations
+    example_questions:
+      - How many orders were there?
+      - How many orders by channel?
+  - name: average_order_value
+    description: Average value of a completed order in USD.
+    definition: SUM(orders.amount) / COUNT(*) over completed orders.
+    aggregation: AVG(orders.amount)
+    model: orders
+    dimensions: [region, product_category, month, channel]
+    owner: finance
+    example_questions:
+      - What is the average order value?
+      - What is the average order value by region?
+  - name: active_customers
+    description: Number of customers with an active subscription.
+    definition: COUNT DISTINCT customer_id in subscriptions where status = 'active'.
+    aggregation: COUNT(DISTINCT customer_id)
+    model: subscriptions
+    dimensions: [region, month]
+    owner: product
+    example_questions:
+      - How many active customers do we have?
+  - name: monthly_churn_rate
+    description: Share of subscriptions that ended in a month, as a percentage of subscriptions that had started by then.
+    definition: 100 * (subscriptions ended in the month) / (subscriptions started on or before month end).
+    aggregation: churned / started * 100
+    model: subscriptions
+    dimensions: [month]
+    owner: product
+    example_questions:
+      - What is the monthly churn rate?
+      - Show churn by month.
+
+joins:
+  - {from: orders, to: customers, on: "orders.customer_id = customers.id", relationship: many_to_one}
+  - {from: orders, to: products, on: "orders.product_id = products.id", relationship: many_to_one}
+  - {from: subscriptions, to: customers, on: "subscriptions.customer_id = customers.id", relationship: many_to_one}
