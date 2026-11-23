@@ -22,10 +22,10 @@ const DEMO_QUESTIONS = [
 ]
 
 const DEMO_GROUPS: { label: string; color: string; questions: string[] }[] = [
-  { label: 'Revenue', color: '#a78bfa', questions: DEMO_QUESTIONS.slice(0, 3).concat(DEMO_QUESTIONS.slice(11)) },
-  { label: 'Products', color: '#22d3ee', questions: DEMO_QUESTIONS.slice(3, 5) },
-  { label: 'Orders & customers', color: '#fbbf24', questions: DEMO_QUESTIONS.slice(5, 9) },
-  { label: 'Churn', color: '#fb7185', questions: DEMO_QUESTIONS.slice(9, 11) },
+  { label: 'Revenue', color: '#175cd3', questions: DEMO_QUESTIONS.slice(0, 3).concat(DEMO_QUESTIONS.slice(11)) },
+  { label: 'Products', color: '#067647', questions: DEMO_QUESTIONS.slice(3, 5) },
+  { label: 'Orders & customers', color: '#b54708', questions: DEMO_QUESTIONS.slice(5, 9) },
+  { label: 'Churn', color: '#b42318', questions: DEMO_QUESTIONS.slice(9, 11) },
 ]
 
 const PIPELINE_STEPS = ['Classify', 'Resolve', 'Plan', 'Draft', 'Validate', 'Execute', 'Explain']
@@ -45,11 +45,11 @@ function resolveClarifying(run: any, option: string): string {
 }
 
 function metricIcon(name: string): string {
-  if (name.includes('revenue')) return '💰'
-  if (name.includes('order')) return '🧾'
-  if (name.includes('average')) return '📊'
-  if (name.includes('customer')) return '👥'
-  if (name.includes('churn')) return '📉'
+  if (name.includes('revenue')) return '$'
+  if (name.includes('order')) return '#'
+  if (name.includes('average')) return '≡'
+  if (name.includes('customer')) return '○'
+  if (name.includes('churn')) return '↘'
   return '◆'
 }
 
@@ -287,7 +287,7 @@ export default function App() {
               )}
               <input value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="Email" type="email" required autoComplete="email" />
               <input value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} placeholder="Password" type="password" required autoComplete={loginMode === 'register' ? 'new-password' : 'current-password'} />
-              {loginError && <p style={{ color: '#fb7185', margin: '4px 0' }}>{loginError}</p>}
+              {loginError && <p style={{ color: '#b42318', margin: '4px 0' }}>{loginError}</p>}
               <div className="auth-row">
                 <button className="btn btn-primary" type="submit">{loginMode === 'register' ? 'Create account' : 'Sign in'}</button>
                 <button className="btn" type="button" onClick={() => setShowLogin(false)}>Cancel</button>
@@ -357,7 +357,7 @@ export default function App() {
             <div className="result-col">
               {error && (
                 <div className="state-panel state-red">
-                  <div className="state-icon">⚠️</div>
+                  <div className="state-icon">!</div>
                   <h3>Couldn’t reach the backend</h3>
                   <p>{error}</p>
                 </div>
@@ -419,7 +419,7 @@ export default function App() {
               </button>
             </div>
             {uploadFile && <p className="muted" style={{ marginBottom: 0 }}>Selected: {uploadFile.name} ({Math.round(uploadFile.size / 1024)} KB)</p>}
-            {uploadError && <p style={{ color: '#fb7185', margin: '8px 0 0' }}>{uploadError}</p>}
+            {uploadError && <p style={{ color: '#b42318', margin: '8px 0 0' }}>{uploadError}</p>}
             {uploadSuccess && (
               <div className="upload-success">
                 <p style={{ margin: '8px 0' }}>✓ <b>{uploadSuccess.filename}</b> uploaded — {uploadSuccess.row_count} rows, {uploadSuccess.columns.length} columns.</p>
@@ -434,7 +434,7 @@ export default function App() {
           </div>
           <h3>Uploaded datasets</h3>
           {datasets.length === 0 && (
-            <div className="card empty-state"><div className="empty-icon">📁</div>No datasets yet. Upload a CSV above.</div>
+            <div className="card empty-state"><div className="empty-icon">○</div>No datasets yet. Upload a CSV above.</div>
           )}
           <div className="dataset-grid">
             {datasets.map((d: any) => (
@@ -511,7 +511,7 @@ export default function App() {
             <p className="section-sub">Every past answer, with its exact SQL and cost. Select one to reopen it.</p>
           </div>
           {history.length === 0 && (
-            <div className="card empty-state"><div className="empty-icon">🕘</div>No runs yet. Ask a question first.</div>
+            <div className="card empty-state"><div className="empty-icon">○</div>No runs yet. Ask a question first.</div>
           )}
           <div className="history-grid">
             {history.map((r: any) => (
@@ -533,7 +533,7 @@ export default function App() {
             <p className="section-sub">Saved questions that re-run on a cadence and alert only when a threshold is crossed.</p>
           </div>
           {insights.length === 0 && (
-            <div className="card empty-state"><div className="empty-icon">🔔</div>No saved insights yet. Save a run from the Ask tab.</div>
+            <div className="card empty-state"><div className="empty-icon">○</div>No saved insights yet. Save a run from the Ask tab.</div>
           )}
           <div className="insights-grid">
             {insights.map((ins: any) => (
@@ -546,14 +546,14 @@ export default function App() {
                 {insightRuns[ins.id] && (
                   <p className="muted" style={{ margin: '6px 0 0' }}>
                     Last run: value {insightRuns[ins.id].value ?? '—'}
-                    {insightRuns[ins.id].breached ? ' · ⚠️ threshold breached — alert sent' : ' · within threshold'}
+                    {insightRuns[ins.id].breached ? ' · ! threshold breached — alert sent' : ' · within threshold'}
                     {insightRuns[ins.id].status === 'paused_on_schema_change' ? ' · paused: saved SQL no longer validates' : ''}
                   </p>
                 )}
                 <div className="insight-actions">
                   <button className="btn btn-sm btn-primary" onClick={() => runInsightNow(ins.id)}>▶ Run now</button>
                   <button className="btn btn-sm" onClick={async () => { await api.patchInsight(ins.id, { status: ins.status === 'active' ? 'paused' : 'active' }); const d = await api.insights(); setInsights(d.insights || []) }}>
-                    {ins.status === 'active' ? '⏸ Pause' : '▶ Resume'}
+                    {ins.status === 'active' ? 'Pause' : '▶ Resume'}
                   </button>
                   <button className="btn btn-sm btn-danger" onClick={async () => { await api.deleteInsight(ins.id); const d = await api.insights(); setInsights(d.insights || []) }}>Delete</button>
                 </div>
@@ -692,7 +692,7 @@ function Result({ run, onClarify, onSave }: { run: any; onClarify: (o: string) =
   if (run.status === 'clarifying') {
     return (
       <div className="state-panel state-blue">
-        <div className="state-icon">🤔</div>
+        <div className="state-icon">?</div>
         <h3>One quick question</h3>
         <p>{run.clarifying_question}</p>
         <div className="option-cards">{(run.clarifying_options || []).map((o: string) => (
@@ -705,7 +705,7 @@ function Result({ run, onClarify, onSave }: { run: any; onClarify: (o: string) =
   if (run.status === 'refused' || run.status === 'blocked') {
     return (
       <div className="state-panel state-amber">
-        <div className="state-icon">{run.status === 'blocked' ? '🛡️' : '🚫'}</div>
+        <div className="state-icon">×</div>
         <h3>{run.status === 'blocked' ? 'Blocked by the validator' : 'Cannot answer from the modelled data'}</h3>
         <p>{run.refusal}</p>
         <div className="try-instead">
@@ -718,7 +718,7 @@ function Result({ run, onClarify, onSave }: { run: any; onClarify: (o: string) =
   if (run.status === 'failed') {
     return (
       <div className="state-panel state-red">
-        <div className="state-icon">⚠️</div>
+        <div className="state-icon">!</div>
         <h3>Execution failed</h3>
         <p>{run.explanation}</p>
         <div className="code-panel"><pre>{(run.attempts || []).map((a: any) => `#${a.attempt}: ${a.error}`).join('\n')}</pre></div>
@@ -749,9 +749,9 @@ function Result({ run, onClarify, onSave }: { run: any; onClarify: (o: string) =
       <p className="lead">{run.explanation}</p>
       {run.rows?.length === 0 && <p className="muted">Empty result — the filters and period returned no rows. This is not the same as zero.</p>}
       <div className="actions-row">
-        <button className="btn btn-sm" disabled={!!voted} onClick={() => { api.feedback(run.id, 'up'); setVoted('up') }}>{voted === 'up' ? '✓ Helpful' : '👍 Helpful'}</button>
-        <button className="btn btn-sm" disabled={!!voted} onClick={() => { api.feedback(run.id, 'down'); setVoted('down') }}>{voted === 'down' ? '✓ Noted' : '👎 Wrong'}</button>
-        <button className="btn btn-sm btn-primary" onClick={onSave}>＋ Save as scheduled insight</button>
+        <button className="btn btn-sm" disabled={!!voted} onClick={() => { api.feedback(run.id, 'up'); setVoted('up') }}>{voted === 'up' ? '✓ Helpful' : 'Helpful'}</button>
+        <button className="btn btn-sm" disabled={!!voted} onClick={() => { api.feedback(run.id, 'down'); setVoted('down') }}>{voted === 'down' ? '✓ Noted' : 'Wrong'}</button>
+        <button className="btn btn-sm btn-primary" onClick={onSave}>+ Save as scheduled insight</button>
       </div>
       <details>
         <summary>Result table ({run.row_count} rows)</summary>

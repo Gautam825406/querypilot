@@ -61,35 +61,31 @@ export function Chart({ spec }: { spec: any }) {
       <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label="Line chart">
         <defs>
           <linearGradient id={`area-${gid}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.02" />
-          </linearGradient>
-          <linearGradient id={`line-${gid}`} x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stopColor="#a78bfa" />
-            <stop offset="100%" stopColor="#22d3ee" />
+            <stop offset="0%" stopColor="#182230" stopOpacity="0.10" />
+            <stop offset="100%" stopColor="#182230" stopOpacity="0.02" />
           </linearGradient>
         </defs>
         {gridVals.map((g) => (
           <g key={g}>
-            <line x1={padL} x2={W - padR} y1={yOf(g)} y2={yOf(g)} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-            <text x={padL - 8} y={yOf(g) + 4} fontSize="11" fill="#93a1c0" textAnchor="end">{fmtAxis(g)}</text>
+            <line x1={padL} x2={W - padR} y1={yOf(g)} y2={yOf(g)} stroke="#e4e7ec" strokeWidth="1" />
+            <text x={padL - 8} y={yOf(g) + 4} fontSize="11" fill="#667085" textAnchor="end">{fmtAxis(g)}</text>
           </g>
         ))}
         <path d={area} fill={`url(#area-${gid})`} />
-        <path d={line} fill="none" stroke={`url(#line-${gid})`} strokeWidth="3" strokeLinecap="round" />
+        <path d={line} fill="none" stroke="#182230" strokeWidth="2.5" strokeLinecap="round" />
         {values.map((v, i) => (
           <g key={i}>
-            <circle cx={pts[i].x} cy={pts[i].y} r="8" fill="#8b5cf6" opacity="0.25" />
-            <circle cx={pts[i].x} cy={pts[i].y} r="4" fill="#0a1020" stroke="#a78bfa" strokeWidth="2">
+            <circle cx={pts[i].x} cy={pts[i].y} r="8" fill="#182230" opacity="0.12" />
+            <circle cx={pts[i].x} cy={pts[i].y} r="4" fill="#ffffff" stroke="#182230" strokeWidth="2">
               <title>{`${v[xKey]}: ${fmt(v[yKey])}`}</title>
             </circle>
-            <text x={pts[i].x} y={pts[i].y - 13} fontSize="11" fill="#c7d2ea" textAnchor="middle" fontWeight="600">
+            <text x={pts[i].x} y={pts[i].y - 13} fontSize="11" fill="#344054" textAnchor="middle" fontWeight="600">
               {fmt(v[yKey])}
             </text>
           </g>
         ))}
-        <text x={padL} y={H - 10} fontSize="12" fill="#93a1c0">{String(values[0][xKey]).slice(0, 10)}</text>
-        <text x={W - padR} y={H - 10} fontSize="12" fill="#93a1c0" textAnchor="end">{String(values[values.length - 1][xKey]).slice(0, 10)}</text>
+        <text x={padL} y={H - 10} fontSize="12" fill="#667085">{String(values[0][xKey]).slice(0, 10)}</text>
+        <text x={W - padR} y={H - 10} fontSize="12" fill="#667085" textAnchor="end">{String(values[values.length - 1][xKey]).slice(0, 10)}</text>
       </svg>
     )
   }
@@ -99,14 +95,14 @@ export function Chart({ spec }: { spec: any }) {
     <svg viewBox={`0 0 ${W} ${H}`} className="chart" role="img" aria-label="Bar chart">
       <defs>
         <linearGradient id={`bar-${gid}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor="#a78bfa" />
-          <stop offset="100%" stopColor="#22d3ee" />
+          <stop offset="0%" stopColor="#182230" />
+          <stop offset="100%" stopColor="#182230" />
         </linearGradient>
       </defs>
       {gridVals.map((g) => (
         <g key={g}>
-          <line x1={padL} x2={W - padR} y1={yOf(g)} y2={yOf(g)} stroke="rgba(255,255,255,0.08)" strokeWidth="1" />
-          <text x={padL - 8} y={yOf(g) + 4} fontSize="11" fill="#93a1c0" textAnchor="end">{fmtAxis(g)}</text>
+          <line x1={padL} x2={W - padR} y1={yOf(g)} y2={yOf(g)} stroke="#e4e7ec" strokeWidth="1" />
+          <text x={padL - 8} y={yOf(g) + 4} fontSize="11" fill="#667085" textAnchor="end">{fmtAxis(g)}</text>
         </g>
       ))}
       {values.map((v, i) => {
@@ -115,13 +111,13 @@ export function Chart({ spec }: { spec: any }) {
         const w = Math.max(bw * 0.72, 4)
         return (
           <g key={i}>
-            <rect x={x} y={H - padB - h} width={w} height={h} rx="6" fill={`url(#bar-${gid})`}>
+            <rect x={x} y={H - padB - h} width={w} height={h} rx="4" fill="#182230">
               <title>{`${v[xKey]}: ${fmt(v[yKey])}`}</title>
             </rect>
-            <text x={x + w / 2} y={H - padB - h - 7} fontSize="11" fill="#c7d2ea" textAnchor="middle" fontWeight="600">
+            <text x={x + w / 2} y={H - padB - h - 7} fontSize="11" fill="#344054" textAnchor="middle" fontWeight="600">
               {fmt(v[yKey])}
             </text>
-            <text x={padL + i * bw + bw / 2} y={H - 10} fontSize="11" fill="#93a1c0" textAnchor="middle">
+            <text x={padL + i * bw + bw / 2} y={H - 10} fontSize="11" fill="#667085" textAnchor="middle">
               {String(v[xKey]).slice(0, 12)}
             </text>
           </g>
